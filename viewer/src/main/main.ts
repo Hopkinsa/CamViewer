@@ -59,7 +59,7 @@ function watchInput() {
   watcher = chokidar.watch(library.settings().importPath, {
     ignoreInitial: true,
     awaitWriteFinish: { stabilityThreshold: 2500, pollInterval: 250 },
-    ignored: (path) => /(^|[/\\])\.|\.part$/i.test(path),
+    ignored: (path) => /(^|[/\\])\.|\.part$|\.md$/i.test(path),
   });
   watcher.on("add", (path) => {
     queue.add(path);
