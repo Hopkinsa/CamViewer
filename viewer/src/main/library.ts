@@ -422,7 +422,7 @@ export class Library {
         else if (
           entry.isFile() &&
           !entry.name.startsWith(".") &&
-          !/\.part$/i.test(entry.name)
+          !/\.part$|\.md$/i.test(entry.name)
         )
           files.push(path);
       }
