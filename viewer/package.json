@@ -1,0 +1,70 @@
+{
+  "name": "camviewer",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Local image and video review library",
+  "main": "dist-electron/main.js",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "build": "tsc --noEmit && vite build && node scripts/assets.mjs && npm run build:electron",
+    "build:electron": "esbuild src/main/main.ts --bundle --platform=node --format=esm --packages=external --outfile=dist-electron/main.js && esbuild src/main/preload.ts --bundle --platform=node --format=cjs --external:electron --outfile=dist-electron/preload.cjs",
+    "start": "electron .",
+    "typecheck": "tsc --noEmit",
+    "test": "node --experimental-strip-types --test src/main/*.test.ts",
+    "test:desktop": "node --experimental-strip-types scripts/desktop-test.ts",
+    "package": "npm run build && electron-builder --dir"
+  },
+  "build": {
+    "appId": "org.camviewer.desktop",
+    "productName": "CamViewer",
+    "asar": false,
+    "files": [
+      "dist/**",
+      "dist-electron/**",
+      "package.json"
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "mac": {
+      "category": "public.app-category.photography"
+    }
+  },
+  "dependencies": {
+    "@ffprobe-installer/ffprobe": "^2.1.2",
+    "@fontsource/dm-sans": "^5.3.0",
+    "@fontsource/manrope": "^5.3.0",
+    "@techstark/opencv-js": "^5.0.0-release.1",
+    "chokidar": "^6.0.0",
+    "exiftool-vendored": "^39.1.0",
+    "ffmpeg-static": "^5.3.0",
+    "lucide-react": "^1.64.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "sharp": "^0.35.5",
+    "tesseract.js": "^7.0.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.64.1",
+    "@types/node": "^26.6.6",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.2",
+    "electron": "^45.1.0",
+    "electron-builder": "^26.18.0",
+    "esbuild": "^0.28.2",
+    "prettier": "^3.9.10",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.5"
+  },
+  "allowScripts": {
+    "ffmpeg-static@5.3.0": true,
+    "esbuild@0.28.2": true,
+    "@ffprobe-installer/darwin-arm64@5.0.1": true,
+    "@ffprobe-installer/darwin-x64@5.1.0": true,
+    "electron-winstaller@5.4.0": true,
+    "fsevents@2.3.3": true,
+    "tesseract.js@7.0.0": true
+  }
+}
