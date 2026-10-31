@@ -6,7 +6,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import chokidar from "chokidar";
 import { Library } from "./library.ts";
-import type { MediaPatch, Settings } from "../shared/types.ts";
+import type { MediaPatch, MediaQuery, Settings } from "../shared/types.ts";
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -27,6 +27,7 @@ let watcher: ReturnType<typeof chokidar.watch>;
 let quitting = false;
 const queue = new Set<string>();
 let draining = false;
+let changeTimer: ReturnType<typeof setTimeout> | undefined;
 
 function ids(value: unknown): string[] {
   if (
@@ -41,6 +42,34 @@ function text(value: unknown): string {
   if (typeof value !== "string" || value.length > 1000)
     throw new Error("Invalid text input.");
   return value;
+}
+function mediaQuery(value: unknown): MediaQuery {
+  if (value === undefined) return {};
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new Error("Invalid media query.");
+  const query = value as MediaQuery;
+  if (
+    (query.state !== undefined &&
+      !["gallery", "review"].includes(query.state)) ||
+    (query.kind !== undefined &&
+      !["all", "image", "video"].includes(query.kind)) ||
+    (query.sort !== undefined &&
+      !["date", "name", "tag", "imported"].includes(query.sort)) ||
+    (query.exactFolder !== undefined && typeof query.exactFolder !== "boolean")
+  )
+    throw new Error("Invalid media query.");
+  for (const value of [
+    query.folderId,
+    query.search,
+    query.from,
+    query.to,
+    query.anchorId,
+  ])
+    if (value !== undefined) text(value);
+  for (const value of [query.offset, query.limit])
+    if (value !== undefined && (!Number.isSafeInteger(value) || value < 0))
+      throw new Error("Invalid media page.");
+  return query;
 }
 async function drain() {
   if (draining || library.busy || !queue.size) return;
@@ -152,8 +181,12 @@ app
         ? join(app.getPath("userData"), "workspace")
         : resolve(app.getAppPath(), ".."));
     library = new Library(root, join(here, "..", "dist", "ocr"), () => {
-      if (window && !window.isDestroyed())
-        window.webContents.send("camviewer:changed");
+      if (!changeTimer)
+        changeTimer = setTimeout(() => {
+          changeTimer = undefined;
+          if (window && !window.isDestroyed())
+            window.webContents.send("camviewer:changed");
+        }, 250);
       if (!library?.busy) void drain();
     });
     await library.initialize();
@@ -188,7 +221,19 @@ app
           throw new Error("Unauthorized request.");
         switch (method) {
           case "snapshot":
-            return library.snapshot();
+            return library.snapshot(mediaQuery(args[0]));
+          case "query":
+            return library.query(mediaQuery(args[0]));
+          case "matchingIds":
+            return library.matchingIds(
+              mediaQuery(args[0]),
+              args[1] === undefined ? undefined : ids(args[1]),
+            );
+          case "getMedia":
+            ids([args[0]]);
+            return library.getMedia(text(args[0]));
+          case "settings":
+            return library.settings();
           case "importFiles": {
             const result = await dialog.showOpenDialog(window, {
               title: "Import images and videos",

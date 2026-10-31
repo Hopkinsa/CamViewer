@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { copyFile, mkdtemp, mkdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { randomUUID } from "node:crypto";
 import { _electron as electron, expect } from "@playwright/test";
 import executablePath from "electron";
 import { Library } from "../src/main/library.ts";
@@ -391,6 +392,190 @@ try {
     /110px/,
   );
   assert.ok(persisted.media.some((item) => item.tags.includes("Regression")));
+  await app.close();
+  const seed = new Library(
+    root,
+    resolve("../Requirements/application_src/camDate"),
+  );
+  try {
+    const template = seed
+      .rows()
+      .find((row) => row.kind === "image" && row.state === "gallery")!;
+    for (let index = 0; index < 1500; index++) {
+      const id = randomUUID();
+      seed.put({
+        ...template,
+        id,
+        name: `Scale fixture ${index}.JPG`,
+        tags: [],
+        metadata: { note: "x".repeat(32768) },
+      });
+      await copyFile(
+        join(seed.cache, `${template.id}.jpg`),
+        join(seed.cache, `${id}.jpg`),
+      );
+    }
+    await seed.saveSettings({
+      ...seed.settings(),
+      pageSize: 60,
+      defaultSort: "name",
+      display: { pageHeading: true, toolbar: true, statusbar: true },
+    });
+  } finally {
+    await seed.close();
+  }
+  app = await electron.launch(options);
+  const scalePage = await app.firstWindow();
+  scalePage.on("pageerror", (failure) => failures.push(failure.message));
+  await expect(scalePage.locator(".media-card")).toHaveCount(60);
+  const cdp = await scalePage.context().newCDPSession(scalePage);
+  await cdp.send("HeapProfiler.collectGarbage");
+  const before = await cdp.send("Runtime.getHeapUsage");
+  await app.evaluate(({ ipcMain }) => {
+    const handlers = (
+      ipcMain as unknown as {
+        _invokeHandlers: Map<string, (...args: unknown[]) => unknown>;
+      }
+    )._invokeHandlers;
+    const original = handlers.get("camviewer:call")!;
+    const stats = { snapshots: 0, active: 0, maxActive: 0 };
+    (
+      globalThis as typeof globalThis & { queryStats?: typeof stats }
+    ).queryStats = stats;
+    handlers.set("camviewer:call", async (...args) => {
+      if (args[1] !== "snapshot") return original(...args);
+      stats.snapshots++;
+      stats.active++;
+      stats.maxActive = Math.max(stats.maxActive, stats.active);
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 400));
+        return await original(...args);
+      } finally {
+        stats.active--;
+      }
+    });
+  });
+  await scalePage
+    .getByRole("textbox", { name: "Search library" })
+    .fill("No such fixture");
+  await app.evaluate(({ BrowserWindow }) => {
+    for (let index = 0; index < 3000; index++)
+      BrowserWindow.getAllWindows()[0].webContents.send("camviewer:changed");
+  });
+  await scalePage
+    .getByRole("textbox", { name: "Search library" })
+    .fill("Scale fixture");
+  await expect(scalePage.locator(".collection-footer")).toContainText(
+    "of 1500",
+  );
+  await expect(scalePage.locator(".media-card")).toHaveCount(60);
+  await expect
+    .poll(() =>
+      app.evaluate(
+        () =>
+          (
+            globalThis as typeof globalThis & {
+              queryStats: { snapshots: number; active: number };
+            }
+          ).queryStats,
+      ),
+    )
+    .toMatchObject({ active: 0 });
+  const stats = await app.evaluate(
+    () =>
+      (
+        globalThis as typeof globalThis & {
+          queryStats: { snapshots: number; maxActive: number };
+        }
+      ).queryStats,
+  );
+  assert.equal(stats.maxActive, 1);
+  assert.ok(
+    stats.snapshots <= 8,
+    `Notification burst triggered ${stats.snapshots} snapshots`,
+  );
+  const payload = await scalePage.evaluate(() =>
+    window.camviewer!.snapshot({
+      state: "gallery",
+      search: "Scale fixture",
+      limit: 60,
+    }),
+  );
+  assert.equal(payload.total, 1500);
+  assert.equal(payload.media.length, 60);
+  assert.ok(payload.media.every((row) => !("metadata" in row)));
+  assert.ok(JSON.stringify(payload).length < 60_000);
+  await scalePage
+    .getByRole("button", { name: "Select all matching", exact: true })
+    .click();
+  await expect(scalePage.locator(".batch-bar")).toContainText("1500 selected");
+  await scalePage.getByTitle("Next page", { exact: true }).click();
+  await expect(scalePage.locator(".collection-footer")).toContainText(
+    "61–120 of 1500",
+  );
+  await expect(scalePage.locator(".batch-bar")).toContainText("1500 selected");
+  await scalePage
+    .getByRole("button", { name: "Edit metadata", exact: true })
+    .click();
+  await expect(scalePage.locator(".dialog .eyebrow")).toHaveText(
+    "1500 SELECTED",
+  );
+  await scalePage.getByTitle("Close metadata editor", { exact: true }).click();
+  await scalePage.locator(".media-card").first().dblclick();
+  await expect(scalePage.locator(".ribbon-item")).toHaveCount(60);
+  await expect(
+    scalePage.locator('.ribbon-item[aria-current="true"]'),
+  ).toHaveCount(1);
+  await scalePage.waitForFunction(
+    () =>
+      !!document.querySelector<HTMLImageElement>(".viewer-media img")
+        ?.naturalWidth,
+  );
+  const firstRibbon = await scalePage
+    .locator(".ribbon-item")
+    .first()
+    .getAttribute("title");
+  await scalePage.locator(".file-ribbon").evaluate((element) => {
+    element.scrollLeft = element.scrollWidth;
+  });
+  await expect
+    .poll(() =>
+      scalePage
+        .locator(".file-ribbon")
+        .evaluate(
+          (element) =>
+            element.scrollLeft + element.clientWidth >= element.scrollWidth - 1,
+        ),
+    )
+    .toBe(true);
+  await scalePage.getByTitle("Scroll ribbon right", { exact: true }).click();
+  await expect
+    .poll(() => scalePage.locator(".ribbon-item").first().getAttribute("title"))
+    .not.toBe(firstRibbon);
+  await expect(scalePage.locator(".ribbon-item")).toHaveCount(60);
+  await scalePage.screenshot({ path: "test-results/large-library.png" });
+  await app.evaluate(({ BrowserWindow }) => {
+    const window = BrowserWindow.getAllWindows()[0];
+    window.setMinimumSize(360, 560);
+    window.setContentSize(390, 780);
+  });
+  assert.ok(
+    await scalePage.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth,
+    ),
+  );
+  await scalePage.screenshot({ path: "test-results/large-library-mobile.png" });
+  await cdp.send("HeapProfiler.collectGarbage");
+  const after = await cdp.send("Runtime.getHeapUsage");
+  assert.ok(
+    after.usedSize < 128 * 1024 * 1024,
+    `Renderer heap reached ${after.usedSize} bytes`,
+  );
+  assert.ok(after.usedSize - before.usedSize < 64 * 1024 * 1024);
+  assert.deepEqual(failures, []);
+  console.log(
+    `PASS: 1500 metadata-heavy records, 3000 notifications, ${stats.snapshots} refreshes (max concurrent ${stats.maxActive}), bounded pages/ribbon, all-matching selection, renderer heap ${(after.usedSize / 1024 / 1024).toFixed(1)} MiB.`,
+  );
   console.log(
     "PASS: Electron gallery, full viewer/ribbon, inspector edits, persisted display preferences, selection, review, video/OpenCV, responsive screenshots, confirmations, byte ranges, native imports, OCR, and restart persistence.",
   );

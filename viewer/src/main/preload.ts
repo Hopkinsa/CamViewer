@@ -4,7 +4,12 @@ import type { API } from "../shared/types.ts";
 const invoke = (method: string, ...args: unknown[]) =>
   ipcRenderer.invoke("camviewer:call", method, args);
 const api: API = {
-  snapshot: () => invoke("snapshot"),
+  snapshot: (query) => invoke("snapshot", query),
+  query: (query) => invoke("query", query),
+  matchingIds: (query, selectedIds) =>
+    invoke("matchingIds", query, selectedIds),
+  getMedia: (id) => invoke("getMedia", id),
+  settings: () => invoke("settings"),
   importFiles: () => invoke("importFiles"),
   scan: () => invoke("scan"),
   accept: (ids, folderId) => invoke("accept", ids, folderId),
