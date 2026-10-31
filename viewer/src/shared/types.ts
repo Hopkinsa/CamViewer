@@ -53,11 +53,35 @@ export interface Job {
   createdAt: string;
 }
 export interface Snapshot {
-  media: Media[];
+  media: MediaSummary[];
+  total: number;
+  offset: number;
+  counts: Record<View, number>;
   folders: Folder[];
   jobs: Job[];
   settings: Settings;
   workspace: string;
+}
+export type MediaSummary = Omit<Media, "metadata" | "warnings"> & {
+  hasWarnings: boolean;
+};
+export interface MediaQuery {
+  state?: View;
+  folderId?: string;
+  exactFolder?: boolean;
+  kind?: "all" | "image" | "video";
+  search?: string;
+  from?: string;
+  to?: string;
+  sort?: SortBy;
+  offset?: number;
+  limit?: number;
+  anchorId?: string;
+}
+export interface MediaPage {
+  media: MediaSummary[];
+  total: number;
+  offset: number;
 }
 export interface BatchResult {
   succeeded: string[];
@@ -70,7 +94,11 @@ export interface MediaPatch {
   clear?: boolean;
 }
 export interface API {
-  snapshot(): Promise<Snapshot>;
+  snapshot(query?: MediaQuery): Promise<Snapshot>;
+  query(query: MediaQuery): Promise<MediaPage>;
+  matchingIds(query: MediaQuery, selectedIds?: string[]): Promise<string[]>;
+  getMedia(id: string): Promise<Media>;
+  settings(): Promise<Settings>;
   importFiles(): Promise<void>;
   scan(): Promise<BatchResult>;
   accept(ids: string[], folderId: string): Promise<BatchResult>;

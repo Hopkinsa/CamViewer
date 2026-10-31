@@ -36,6 +36,9 @@ import {
 import type {
   BatchResult,
   Media,
+  MediaQuery,
+  MediaPage,
+  MediaSummary,
   MediaPatch,
   Settings,
   SortBy,
@@ -87,13 +90,103 @@ export function App() {
   const [inspectorOpen, setInspectorOpen] = useState(true);
   const anchor = useRef<string | null>(null);
   const ribbonRef = useRef<HTMLDivElement>(null);
-
-  const refresh = async () => {
-    if (api) {
-      const next = await api.snapshot();
-      setSnapshot(next);
-    }
+  const [detail, setDetail] = useState<Media | null>(null);
+  const [editorMedia, setEditorMedia] = useState<Media | null>(null);
+  const [ribbon, setRibbon] = useState<MediaPage & { focusId?: string }>({
+    media: [],
+    offset: 0,
+    total: 0,
+  });
+  const centeredFile = useRef<string | null>(null);
+  const [ribbonOffset, setRibbonOffset] = useState<number | null>(null);
+  const loadRef = useRef<() => Promise<void>>(async () => {});
+  const flight = useRef<Promise<void> | null>(null);
+  const pending = useRef(false);
+  const version = useRef(0);
+  const initialized = useRef(false);
+  const pageSize = snapshot?.settings.pageSize ?? 60;
+  const queryOptions: MediaQuery = {
+    state: view,
+    folderId: view === "gallery" ? folder : undefined,
+    search: deferredQuery,
+    kind: kind as MediaQuery["kind"],
+    from,
+    to,
+    sort,
+    offset: page * pageSize,
+    limit: pageSize,
   };
+  const refresh = () => {
+    pending.current = true;
+    if (!flight.current) {
+      flight.current = (async () => {
+        try {
+          while (pending.current) {
+            pending.current = false;
+            await loadRef.current();
+          }
+        } catch (failure) {
+          setError(String(failure));
+        } finally {
+          flight.current = null;
+        }
+      })();
+    }
+    return flight.current;
+  };
+  useEffect(() => {
+    const requestVersion = ++version.current;
+    loadRef.current = async () => {
+      if (!api) return;
+      const [next, selected] = await Promise.all([
+        api.snapshot(queryOptions),
+        focused
+          ? api.getMedia(focused).catch(() => null)
+          : Promise.resolve(null),
+      ]);
+      if (version.current !== requestVersion) return;
+      setSnapshot(next);
+      setDetail(selected);
+      if (!initialized.current) {
+        initialized.current = true;
+        setSize(next.settings.thumbnailSize);
+        setSort(next.settings.defaultSort);
+      }
+      if (viewerOpen && (!selected || selected.state !== view))
+        setViewerOpen(false);
+      if (viewerOpen && selected && selected.state === view) {
+        const nextRibbon = await api.query({
+          state: view,
+          folderId: view === "gallery" ? selected.folderId : undefined,
+          exactFolder: true,
+          sort,
+          limit: 60,
+          ...(ribbonOffset === null
+            ? { anchorId: selected.id }
+            : { offset: ribbonOffset }),
+        });
+        if (version.current === requestVersion)
+          setRibbon({ ...nextRibbon, focusId: selected.id });
+      } else setRibbon({ media: [], offset: 0, total: 0 });
+    };
+    void refresh();
+    return () => {
+      version.current++;
+    };
+  }, [
+    view,
+    folder,
+    deferredQuery,
+    sort,
+    kind,
+    from,
+    to,
+    page,
+    pageSize,
+    focused,
+    viewerOpen,
+    ribbonOffset,
+  ]);
   useEffect(() => {
     if (!api) {
       setError(
@@ -101,103 +194,97 @@ export function App() {
       );
       return;
     }
-    void api
-      .snapshot()
-      .then((next) => {
-        setSnapshot(next);
-        setSize(next.settings.thumbnailSize);
-        setSort(next.settings.defaultSort);
-      })
-      .catch((failure) => setError(String(failure)));
-    return api.onChange(() => {
-      void refresh();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const unsubscribe = api.onChange(() => {
+      if (timer) return;
+      timer = setTimeout(() => {
+        timer = undefined;
+        void refresh();
+      }, 250);
     });
+    return () => {
+      clearTimeout(timer);
+      unsubscribe();
+    };
   }, []);
   useEffect(() => {
     setPage(0);
   }, [view, folder, deferredQuery, sort, kind, from, to]);
+  useEffect(() => {
+    let disposed = false;
+    if (selection.length && api)
+      void api
+        .matchingIds(queryOptions, selection)
+        .then((ids) => {
+          const checked = new Set(selection);
+          const matching = new Set(ids);
+          if (!disposed)
+            setSelection((previous) =>
+              previous.filter((id) => !checked.has(id) || matching.has(id)),
+            );
+        })
+        .catch((failure) => {
+          if (!disposed) setError(String(failure));
+        });
+    return () => {
+      disposed = true;
+    };
+  }, [view, folder, deferredQuery, kind, from, to]);
 
-  const all = snapshot?.media ?? [];
-  const matches = all
-    .filter(
-      (item) =>
-        item.state === view &&
-        (view === "review" || folder === "root" || item.folderId === folder) &&
-        (kind === "all" || item.kind === kind) &&
-        (!from ||
-          (item.captureDate && item.captureDate.slice(0, 10) >= from)) &&
-        (!to || (item.captureDate && item.captureDate.slice(0, 10) <= to)) &&
-        `${item.name} ${item.tags.join(" ")} ${JSON.stringify(item.metadata)} ${item.captureDate ?? ""}`
-          .toLocaleLowerCase()
-          .includes(deferredQuery.toLocaleLowerCase()),
-    )
-    .sort((first, second) => {
-      const value =
-        sort === "name"
-          ? first.name.localeCompare(second.name, undefined, { numeric: true })
-          : sort === "tag"
-            ? (first.tags.slice().sort()[0] ?? "\uffff").localeCompare(
-                second.tags.slice().sort()[0] ?? "\uffff",
-              )
-            : sort === "imported"
-              ? second.importedAt.localeCompare(first.importedAt)
-              : (second.captureDate ?? "").localeCompare(
-                  first.captureDate ?? "",
-                );
-      return value || first.id.localeCompare(second.id);
-    });
-  const pageSize = snapshot?.settings.pageSize ?? 60;
-  const pages = Math.max(1, Math.ceil(matches.length / pageSize));
-  const actualPage = Math.min(page, pages - 1);
-  const visible = matches.slice(
-    actualPage * pageSize,
-    (actualPage + 1) * pageSize,
-  );
-  const selectedIds = selection.filter((id) =>
-    matches.some((item) => item.id === id),
-  );
+  const visible = snapshot?.media ?? [];
+  const total = snapshot?.total ?? 0;
+  const pages = Math.max(1, Math.ceil(total / pageSize));
+  const actualPage = Math.floor((snapshot?.offset ?? 0) / pageSize);
+  const selectedIds = selection;
   const current =
-    all.find((item) => item.id === focused && item.state === view) ?? null;
+    detail?.id === focused && detail.state === view ? detail : null;
   const viewing = viewerOpen && !!current;
   const display = snapshot?.settings.display ?? {
     pageHeading: true,
     toolbar: true,
     statusbar: true,
   };
-  const ribbonFiles = all
-    .filter(
-      (item) =>
-        item.state === view &&
-        (view === "review" || item.folderId === current?.folderId),
-    )
-    .sort((first, second) => {
-      const value =
-        sort === "name"
-          ? first.name.localeCompare(second.name, undefined, { numeric: true })
-          : sort === "tag"
-            ? (first.tags.slice().sort()[0] ?? "\uffff").localeCompare(
-                second.tags.slice().sort()[0] ?? "\uffff",
-              )
-            : sort === "imported"
-              ? second.importedAt.localeCompare(first.importedAt)
-              : (second.captureDate ?? "").localeCompare(
-                  first.captureDate ?? "",
-                );
-      return value || first.id.localeCompare(second.id);
-    });
+  const ribbonFiles = ribbon.media;
   const editorIds = viewing && current ? [current.id] : selectedIds;
   useEffect(() => {
-    if (viewerOpen && !current) setViewerOpen(false);
-    if (viewerOpen && focused)
-      ribbonRef.current
-        ?.querySelector(`[data-media-id="${focused}"]`)
-        ?.scrollIntoView({ block: "nearest", inline: "nearest" });
-  }, [viewerOpen, focused, current?.id]);
+    if (!viewerOpen) centeredFile.current = null;
+    if (
+      viewerOpen &&
+      focused &&
+      ribbon.focusId === focused &&
+      ribbonOffset === null &&
+      centeredFile.current !== focused
+    ) {
+      const element = ribbonRef.current?.querySelector(
+        `[data-media-id="${focused}"]`,
+      );
+      if (element) {
+        element.scrollIntoView({ block: "nearest", inline: "nearest" });
+        centeredFile.current = focused;
+      }
+    }
+  }, [viewerOpen, focused, current?.id, ribbon, ribbonOffset]);
+  useEffect(() => {
+    setRibbonOffset(null);
+  }, [focused, sort]);
+  useEffect(() => {
+    let disposed = false;
+    setEditorMedia(null);
+    if (editor && editorIds.length === 1 && api)
+      void api
+        .getMedia(editorIds[0])
+        .then((media) => {
+          if (!disposed) setEditorMedia(media);
+        })
+        .catch((failure) => {
+          if (!disposed) setError(String(failure));
+        });
+    return () => {
+      disposed = true;
+    };
+  }, [editor, editorIds.length, editorIds[0]]);
   const activeFolder = snapshot?.folders.find((item) => item.id === folder);
-  const counts = {
-    gallery: all.filter((item) => item.state === "gallery").length,
-    review: all.filter((item) => item.state === "review").length,
-  };
+  const counts = snapshot?.counts ?? { gallery: 0, review: 0 };
   const running =
     snapshot?.jobs.some((job) => job.state === "running") ?? false;
 
@@ -212,6 +299,15 @@ export function App() {
         setError(result.errors.map((item) => item.message).join("\n"));
       else if (success) setNotice(success);
       await refresh();
+      if (selection.length) {
+        const checked = new Set(selection);
+        const matching = new Set(
+          await api.matchingIds(queryOptions, selection),
+        );
+        setSelection((previous) =>
+          previous.filter((id) => !checked.has(id) || matching.has(id)),
+        );
+      }
     } catch (failure) {
       setError(String(failure instanceof Error ? failure.message : failure));
     } finally {
@@ -225,14 +321,17 @@ export function App() {
     setFocused(null);
     setNavOpen(false);
   }
-  function choose(item: Media, event: React.MouseEvent | React.KeyboardEvent) {
+  function choose(
+    item: MediaSummary,
+    event: React.MouseEvent | React.KeyboardEvent,
+  ) {
     setFocused(item.id);
     setInspectorOpen(true);
     if (event.shiftKey && anchor.current) {
-      const start = matches.findIndex((row) => row.id === anchor.current);
-      const end = matches.findIndex((row) => row.id === item.id);
+      const start = visible.findIndex((row) => row.id === anchor.current);
+      const end = visible.findIndex((row) => row.id === item.id);
       setSelection(
-        matches
+        visible
           .slice(Math.max(0, Math.min(start, end)), Math.max(start, end) + 1)
           .map((row) => row.id),
       );
@@ -592,8 +691,8 @@ export function App() {
           <div className="selection-bar" hidden={viewing}>
             <span>
               {selectedIds.length
-                ? `${selectedIds.length} selected${selectedIds.length === matches.length && matches.length > visible.length ? " across all pages" : ""}`
-                : `${matches.length} ${matches.length === 1 ? "file" : "files"}`}
+                ? `${selectedIds.length} selected${selectedIds.length === total && total > visible.length ? " across all pages" : ""}`
+                : `${total} ${total === 1 ? "file" : "files"}`}
             </span>
             <div>
               <button
@@ -604,7 +703,19 @@ export function App() {
               </button>
               <button
                 className="text-button"
-                onClick={() => setSelection(matches.map((item) => item.id))}
+                disabled={busy || !api}
+                onClick={async () => {
+                  const requestVersion = version.current;
+                  setBusy(true);
+                  try {
+                    const ids = await api!.matchingIds(queryOptions);
+                    if (version.current === requestVersion) setSelection(ids);
+                  } catch (failure) {
+                    setError(String(failure));
+                  } finally {
+                    setBusy(false);
+                  }
+                }}
               >
                 Select all matching
               </button>
@@ -654,8 +765,8 @@ export function App() {
                         ) {
                           event.preventDefault();
                           const next =
-                            matches[
-                              matches.indexOf(item) +
+                            visible[
+                              visible.indexOf(item) +
                                 (event.key === "ArrowRight" ? 1 : -1)
                             ];
                           if (next) choose(next, event);
@@ -686,7 +797,7 @@ export function App() {
                             )}
                           </span>
                         )}
-                        {item.warnings.length > 0 && (
+                        {item.hasWarnings && (
                           <span
                             className="warning-badge"
                             title="Review metadata warnings"
@@ -880,12 +991,12 @@ export function App() {
               <button
                 className="icon bordered"
                 title="Scroll ribbon left"
-                onClick={() =>
-                  ribbonRef.current?.scrollBy({
-                    left: -360,
-                    behavior: "smooth",
-                  })
-                }
+                onClick={() => {
+                  const element = ribbonRef.current;
+                  if (element && element.scrollLeft <= 1 && ribbon.offset > 0) {
+                    setRibbonOffset(Math.max(0, ribbon.offset - 30));
+                  } else element?.scrollBy({ left: -360, behavior: "smooth" });
+                }}
               >
                 <ChevronLeft size={19} />
               </button>
@@ -918,9 +1029,18 @@ export function App() {
               <button
                 className="icon bordered"
                 title="Scroll ribbon right"
-                onClick={() =>
-                  ribbonRef.current?.scrollBy({ left: 360, behavior: "smooth" })
-                }
+                onClick={() => {
+                  const element = ribbonRef.current;
+                  if (
+                    element &&
+                    element.scrollLeft + element.clientWidth >=
+                      element.scrollWidth - 1 &&
+                    ribbon.offset + ribbonFiles.length < ribbon.total
+                  ) {
+                    setRibbonOffset(ribbon.offset + 30);
+                    element.scrollLeft = 0;
+                  } else element?.scrollBy({ left: 360, behavior: "smooth" });
+                }}
               >
                 <ChevronRight size={19} />
               </button>
@@ -935,9 +1055,8 @@ export function App() {
           )}
           <footer className="collection-footer" hidden={viewing}>
             <span>
-              {matches.length ? actualPage * pageSize + 1 : 0}–
-              {Math.min((actualPage + 1) * pageSize, matches.length)} of{" "}
-              {matches.length}
+              {total ? actualPage * pageSize + 1 : 0}–
+              {Math.min((actualPage + 1) * pageSize, total)} of {total}
             </span>
             <div className="pagination">
               <button
@@ -1141,18 +1260,21 @@ export function App() {
           </form>
         </div>
       )}
-      {editor && editorIds.length > 0 && (
-        <MetadataDialog
-          media={all.filter((item) => editorIds.includes(item.id))}
-          close={() => setEditor(false)}
-          save={(patch) =>
-            perform(async () => {
-              await api!.update([...editorIds], patch);
-              setEditor(false);
-            })
-          }
-        />
-      )}
+      {editor &&
+        editorIds.length > 0 &&
+        (editorIds.length > 1 || editorMedia?.id === editorIds[0]) && (
+          <MetadataDialog
+            media={editorIds.length === 1 ? editorMedia : null}
+            count={editorIds.length}
+            close={() => setEditor(false)}
+            save={(patch) =>
+              perform(async () => {
+                await api!.update([...editorIds], patch);
+                setEditor(false);
+              })
+            }
+          />
+        )}
     </div>
   );
 }
@@ -1494,24 +1616,24 @@ function FilePreview({
 
 function MetadataDialog({
   media,
+  count,
   close,
   save,
 }: {
-  media: Media[];
+  media: Media | null;
+  count: number;
   close: () => void;
   save: (patch: MediaPatch) => Promise<void>;
 }) {
-  const [tags, setTags] = useState(
-    media.length === 1 ? media[0].tags.join(", ") : "",
-  );
+  const [tags, setTags] = useState(media ? media.tags.join(", ") : "");
   const [metadata, setMetadata] = useState(
-    media.length === 1 ? JSON.stringify(media[0].metadata, null, 2) : "{}",
+    media ? JSON.stringify(media.metadata, null, 2) : "{}",
   );
   const [date, setDate] = useState(
-    media.length === 1 ? (media[0].captureDate?.slice(0, 19) ?? "") : "",
+    media ? (media.captureDate?.slice(0, 19) ?? "") : "",
   );
-  const [applyTags, setApplyTags] = useState(media.length === 1);
-  const [applyMetadata, setApplyMetadata] = useState(media.length === 1);
+  const [applyTags, setApplyTags] = useState(count === 1);
+  const [applyMetadata, setApplyMetadata] = useState(count === 1);
   const [applyDate, setApplyDate] = useState(false);
   const [error, setError] = useState("");
   function submit(event: React.FormEvent) {
@@ -1541,7 +1663,7 @@ function MetadataDialog({
       <form className="dialog" onSubmit={submit}>
         <div className="dialog-heading">
           <div>
-            <div className="eyebrow">{media.length} SELECTED</div>
+            <div className="eyebrow">{count} SELECTED</div>
             <h2>Edit metadata</h2>
           </div>
           <button

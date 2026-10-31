@@ -27,6 +27,9 @@ import type {
   BatchResult,
   Folder,
   Media,
+  MediaQuery,
+  MediaPage,
+  MediaSummary,
   MediaPatch,
   Settings,
   Snapshot,
@@ -73,6 +76,18 @@ export class Library {
     mkdirSync(this.cache, { recursive: true });
     this.tools = new MediaTools(ocrPath);
     this.db = new DatabaseSync(join(this.root, "data", "camviewer.sqlite"));
+    this.db.function("text_fold", { deterministic: true }, (value) =>
+      String(value ?? "").toLocaleLowerCase(),
+    );
+    this.db.function("name_key", { deterministic: true }, (value) =>
+      String(value ?? "")
+        .toLocaleLowerCase()
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .replace(/\d+/g, (digits) =>
+          digits.replace(/^0+(?=\d)/, "").padStart(24, "0"),
+        ),
+    );
     this.db
       .exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;
       CREATE TABLE IF NOT EXISTS settings (id INTEGER PRIMARY KEY CHECK(id=1), data TEXT NOT NULL CHECK(json_valid(data)));
@@ -80,6 +95,10 @@ export class Library {
       CREATE TABLE IF NOT EXISTS folders (id TEXT PRIMARY KEY, data TEXT NOT NULL CHECK(json_valid(data)));
       CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, kind TEXT NOT NULL, state TEXT NOT NULL, message TEXT NOT NULL, payload TEXT NOT NULL, createdAt TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS media_state ON media(json_extract(data,'$.state'));
+      CREATE INDEX IF NOT EXISTS media_folder ON media(json_extract(data,'$.state'),json_extract(data,'$.folderId'));
+      CREATE INDEX IF NOT EXISTS media_date ON media(json_extract(data,'$.state'),json_extract(data,'$.captureDate'),id);
+      CREATE INDEX IF NOT EXISTS media_imported ON media(json_extract(data,'$.state'),json_extract(data,'$.importedAt'),id);
+      CREATE INDEX IF NOT EXISTS media_name ON media(json_extract(data,'$.state'),name_key(json_extract(data,'$.name')),id);
       PRAGMA user_version=1;`);
     const defaults: Settings = {
       importPath: join(this.root, "in"),
@@ -151,8 +170,140 @@ export class Library {
       .prepare("INSERT OR REPLACE INTO media VALUES (?, ?)")
       .run(row.id, JSON.stringify(row));
   }
-  snapshot(): Snapshot {
+  queryParts(query: MediaQuery) {
+    const filters: string[] = [];
+    const values: string[] = [];
+    const field = (name: string) => `json_extract(data,'$.${name}')`;
+    if (query.state) {
+      filters.push(`${field("state")}=?`);
+      values.push(query.state);
+    }
+    if (query.folderId && (query.folderId !== "root" || query.exactFolder)) {
+      filters.push(`${field("folderId")}=?`);
+      values.push(query.folderId);
+    }
+    if (query.kind && query.kind !== "all") {
+      filters.push(`${field("kind")}=?`);
+      values.push(query.kind);
+    }
+    for (const [date, operator] of [
+      [query.from, ">="],
+      [query.to, "<="],
+    ]) {
+      if (date) {
+        filters.push(`substr(${field("captureDate")},1,10)${operator}?`);
+        values.push(date);
+      }
+    }
+    if (query.search) {
+      filters.push(
+        `instr(text_fold(${field("name")} || ' ' || coalesce((SELECT group_concat(value,' ') FROM json_each(data,'$.tags')),'') || ' ' || ${field("metadata")} || ' ' || coalesce(${field("captureDate")},'')),text_fold(?))>0`,
+      );
+      values.push(query.search);
+    }
+    const order =
+      query.sort === "name"
+        ? `name_key(${field("name")}) ASC`
+        : query.sort === "tag"
+          ? `coalesce((SELECT value FROM json_each(data,'$.tags') ORDER BY value COLLATE NOCASE LIMIT 1),char(65535)) COLLATE NOCASE ASC`
+          : query.sort === "imported"
+            ? `${field("importedAt")} DESC`
+            : `coalesce(${field("captureDate")},'') DESC`;
     return {
+      where: filters.length ? `WHERE ${filters.join(" AND ")}` : "",
+      values,
+      order: `${order},id ASC`,
+    };
+  }
+  query(query: MediaQuery = {}): MediaPage {
+    const { where, values, order } = this.queryParts(query);
+    const limit = Math.max(1, Math.min(240, Math.trunc(query.limit ?? 60)));
+    const total = Number(
+      this.db
+        .prepare(`SELECT count(*) AS total FROM media ${where}`)
+        .get(...values)!.total,
+    );
+    let offset = Math.min(
+      Math.max(0, Math.trunc(query.offset ?? 0)),
+      Math.max(0, Math.ceil(total / limit) - 1) * limit,
+    );
+    if (query.anchorId) {
+      const anchor = this.db
+        .prepare(
+          `SELECT position FROM (SELECT id,row_number() OVER (ORDER BY ${order})-1 AS position FROM media ${where}) WHERE id=?`,
+        )
+        .get(...values, query.anchorId);
+      if (anchor)
+        offset = Math.max(0, Number(anchor.position) - Math.floor(limit / 2));
+    }
+    const rows = this.db
+      .prepare(
+        `SELECT json_object(
+      'id',id,'name',json_extract(data,'$.name'),'kind',json_extract(data,'$.kind'),
+      'state',json_extract(data,'$.state'),'folderId',json_extract(data,'$.folderId'),
+      'size',json_extract(data,'$.size'),'width',json_extract(data,'$.width'),
+      'height',json_extract(data,'$.height'),'duration',json_extract(data,'$.duration'),
+      'captureDate',json_extract(data,'$.captureDate'),'dateSource',json_extract(data,'$.dateSource'),
+      'tags',json_extract(data,'$.tags'),'importedAt',json_extract(data,'$.importedAt'),
+      'hasWarnings',json_array_length(data,'$.warnings')>0) AS summary
+      FROM media ${where} ORDER BY ${order} LIMIT ? OFFSET ?`,
+      )
+      .all(...values, limit, offset) as { summary: string }[];
+    return {
+      total,
+      offset,
+      media: rows.map(({ summary }) => {
+        const row = JSON.parse(summary) as MediaSummary;
+        return {
+          ...row,
+          hasWarnings: !!row.hasWarnings,
+          thumbnail: `cammedia://thumbnail/${row.id}`,
+          url: `cammedia://file/${row.id}`,
+        };
+      }),
+    };
+  }
+  matchingIds(query: MediaQuery, selectedIds?: string[]): string[] {
+    const { where, values, order } = this.queryParts(query);
+    const selection = selectedIds
+      ? `${where ? " AND" : "WHERE"} id IN (SELECT value FROM json_each(?))`
+      : "";
+    return (
+      this.db
+        .prepare(`SELECT id FROM media ${where} ${selection} ORDER BY ${order}`)
+        .all(
+          ...values,
+          ...(selectedIds ? [JSON.stringify(selectedIds)] : []),
+        ) as { id: string }[]
+    ).map((row) => row.id);
+  }
+  getMedia(id: string): Media {
+    const { path, hash, ...row } = this.get(id);
+    return {
+      ...row,
+      thumbnail: `cammedia://thumbnail/${id}`,
+      url: `cammedia://file/${id}`,
+    };
+  }
+  snapshot(query: MediaQuery = {}): Snapshot {
+    return {
+      ...this.query(query),
+      counts: {
+        gallery: Number(
+          this.db
+            .prepare(
+              "SELECT count(*) AS total FROM media WHERE json_extract(data,'$.state')='gallery'",
+            )
+            .get()!.total,
+        ),
+        review: Number(
+          this.db
+            .prepare(
+              "SELECT count(*) AS total FROM media WHERE json_extract(data,'$.state')='review'",
+            )
+            .get()!.total,
+        ),
+      },
       workspace: this.root,
       settings: this.settings(),
       folders: this.folders(),
@@ -161,11 +312,6 @@ export class Library {
           "SELECT id,kind,state,message,createdAt FROM jobs ORDER BY createdAt DESC LIMIT 50",
         )
         .all() as unknown as Snapshot["jobs"],
-      media: this.rows().map(({ path, hash, ...row }) => ({
-        ...row,
-        thumbnail: `cammedia://thumbnail/${row.id}`,
-        url: `cammedia://file/${row.id}`,
-      })),
     };
   }
   async initialize() {
@@ -403,7 +549,14 @@ export class Library {
         } catch (error) {
           const message =
             error instanceof Error ? error.message : String(error);
-          if (staged && !this.rows().some((row) => row.path === staged))
+          if (
+            staged &&
+            !this.db
+              .prepare(
+                "SELECT id FROM media WHERE json_extract(data,'$.path')=? LIMIT 1",
+              )
+              .get(staged)
+          )
             await rm(staged, { force: true });
           if (jobId)
             this.finish(jobId, "failed", `${basename(source)}: ${message}`);

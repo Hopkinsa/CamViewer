@@ -35,8 +35,8 @@ export function MotionPlayer({ media }: { media: Media }) {
   const [error, setError] = useState("");
   const [rate, setRate] = useState(1);
   useEffect(() => {
-    void window.camviewer?.snapshot().then((snapshot) => {
-      setSettings(snapshot.settings.motion ?? defaults);
+    void window.camviewer?.settings().then((settings) => {
+      setSettings(settings.motion ?? defaults);
       loaded.current = true;
     });
   }, []);
@@ -44,10 +44,10 @@ export function MotionPlayer({ media }: { media: Media }) {
     if (!loaded.current) return;
     const timer = setTimeout(() => {
       void window.camviewer
-        ?.snapshot()
-        .then((snapshot) =>
+        ?.settings()
+        .then((settingsSnapshot) =>
           window.camviewer!.saveSettings({
-            ...snapshot.settings,
+            ...settingsSnapshot,
             motion: settings,
           } as Settings),
         )

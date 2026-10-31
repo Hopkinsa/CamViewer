@@ -62,9 +62,12 @@ reporting/
 .DS_Store
 Thumbs.db
 
+Requirements/
+docs/
+info/
 changes/
 /config.json
-data/*.db
+data/*.*
 files/*.*
 in/*.*
 out/*.*

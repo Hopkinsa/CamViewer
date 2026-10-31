@@ -12,12 +12,156 @@ import {
 import { createHash } from "node:crypto";
 import { basename, join } from "node:path";
 import { tmpdir } from "node:os";
+import { createRequire } from "node:module";
+import { Worker } from "node:worker_threads";
 import sharp from "sharp";
 import ffmpeg from "ffmpeg-static";
 import ffprobe from "@ffprobe-installer/ffprobe";
 import { ExifTool } from "exiftool-vendored";
-import { createWorker, PSM } from "tesseract.js";
 import type { Settings } from "../shared/types.ts";
+
+const ocrWorkerSource = `
+const { parentPort, workerData } = require("node:worker_threads");
+const { createWorker, PSM } = require(workerData.modulePath);
+let worker;
+parentPort.on("message", async (message) => {
+  try {
+    if (message.initialize) {
+      worker = await createWorker("eng", 1, {
+        langPath: workerData.langPath,
+        gzip: false,
+        cachePath: workerData.cachePath,
+        errorHandler: (error) => parentPort.postMessage({ error: String(error) }),
+      });
+      await worker.setParameters({ tessedit_pageseg_mode: PSM.SINGLE_LINE });
+      parentPort.postMessage({ result: { text: "", confidence: 0 } });
+    } else {
+      const result = await worker.recognize(message.image);
+      parentPort.postMessage({ result: { text: result.data.text, confidence: result.data.confidence } });
+    }
+  } catch (error) {
+    parentPort.postMessage({ error: String(error.message || error) });
+  }
+});
+`;
+
+type OcrResult = { text: string; confidence: number };
+export interface OverlayEvidence {
+  offset: number;
+  variant?: string;
+  text: string;
+  confidence: number;
+  date: string | null;
+}
+
+export function agreeOverlay(
+  evidence: OverlayEvidence[],
+  kind: Inspection["kind"],
+): string | null {
+  const valid = evidence.filter(
+    (item) =>
+      item.date &&
+      Number.isFinite(Date.parse(item.date)) &&
+      Number.isFinite(item.confidence) &&
+      item.confidence >= 60 &&
+      Date.parse(item.date) <= Date.now() + 86_400_000,
+  );
+  if (kind === "image") {
+    if (new Set(valid.map((item) => item.date)).size !== 1) return null;
+    const variants = new Set(
+      valid.filter((item) => item.variant).map((item) => item.variant),
+    );
+    return variants.size >= 2 ? valid[0].date : null;
+  }
+  const agreed = valid.find(
+    (item) =>
+      new Set(
+        valid
+          .filter(
+            (other) =>
+              Math.abs(Date.parse(other.date!) - Date.parse(item.date!)) <=
+              1000,
+          )
+          .map((other) => other.offset),
+      ).size >= 2,
+  );
+  return agreed?.date ?? null;
+}
+
+class OcrSession {
+  private thread: Worker;
+  private failure?: Error;
+  private pending?: {
+    resolve: (result: OcrResult) => void;
+    reject: (error: Error) => void;
+    timer: ReturnType<typeof setTimeout>;
+  };
+  constructor(langPath: string, cachePath: string) {
+    this.thread = new Worker(ocrWorkerSource, {
+      eval: true,
+      workerData: {
+        modulePath: createRequire(import.meta.url).resolve("tesseract.js"),
+        langPath,
+        cachePath,
+      },
+    });
+    this.thread.on(
+      "message",
+      (message: { error?: string; result?: OcrResult }) => {
+        if (message.error !== undefined) this.fail(new Error(message.error));
+        else if (message.result) this.settle(message.result);
+      },
+    );
+    this.thread.on("error", (error) =>
+      this.fail(error instanceof Error ? error : new Error(String(error))),
+    );
+    this.thread.on("exit", (code) =>
+      this.fail(new Error(`OCR worker exited with ${code}.`)),
+    );
+  }
+  private fail(error: Error) {
+    this.failure ??= error;
+    this.settle(undefined, this.failure);
+  }
+  private settle(result?: OcrResult, error?: Error) {
+    const pending = this.pending;
+    this.pending = undefined;
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    if (error) pending.reject(error);
+    else pending.resolve(result!);
+  }
+  request(
+    message: { initialize?: boolean; image?: Buffer },
+    timeout: number,
+  ): Promise<OcrResult> {
+    if (this.failure) return Promise.reject(this.failure);
+    if (this.pending)
+      return Promise.reject(new Error("Another OCR task is running."));
+    return new Promise((resolve, reject) => {
+      this.pending = {
+        resolve,
+        reject,
+        timer: setTimeout(
+          () => this.fail(new Error("OCR operation timed out.")),
+          timeout,
+        ),
+      };
+      try {
+        this.thread.postMessage(message);
+      } catch (error) {
+        this.fail(error instanceof Error ? error : new Error(String(error)));
+      }
+    });
+  }
+  async close() {
+    try {
+      await this.thread.terminate();
+    } finally {
+      this.thread.removeAllListeners();
+    }
+  }
+}
 
 export interface Inspection {
   kind: "image" | "video";
@@ -50,27 +194,39 @@ export function run(
     let output = "";
     let error = "";
     let bytes = 0;
+    let failure: Error | undefined;
+    let killTimer: ReturnType<typeof setTimeout> | undefined;
+    const stop = (reason: Error) => {
+      if (failure) return;
+      failure = reason;
+      clearTimeout(timer);
+      child.kill("SIGTERM");
+      killTimer = setTimeout(() => child.kill("SIGKILL"), 1000);
+    };
     const timer = setTimeout(() => {
-      child.kill();
-      reject(new Error("Media operation timed out."));
+      stop(new Error("Media operation timed out."));
     }, timeout);
     child.stdout.on("data", (chunk) => {
+      if (failure) return;
       bytes += chunk.length;
-      if (bytes > 8_000_000) child.kill();
+      if (bytes > 8_000_000)
+        stop(new Error("Media tool output exceeded its limit."));
       else output += chunk;
     });
     child.stderr.on("data", (chunk) => {
       error = (error + chunk).slice(-6000);
     });
-    child.once("error", (failure) => {
-      clearTimeout(timer);
-      reject(failure);
+    child.once("error", (reason) => {
+      failure ??= reason;
     });
     child.once("close", (code) => {
       clearTimeout(timer);
-      code === 0
-        ? resolve(output)
-        : reject(new Error(error || `Media tool exited with ${code}.`));
+      clearTimeout(killTimer);
+      failure
+        ? reject(failure)
+        : code === 0
+          ? resolve(output)
+          : reject(new Error(error || `Media tool exited with ${code}.`));
     });
   });
 }
@@ -124,8 +280,15 @@ function embeddedDate(value: unknown): string | null {
 export class MediaTools {
   exif = new ExifTool({ maxProcs: 1, taskTimeoutMillis: 30_000 });
   ocrPath: string;
-  constructor(ocrPath: string) {
+  ocrTimeoutMillis: number;
+  temporaryPath: string;
+  constructor(
+    ocrPath: string,
+    options: { ocrTimeoutMillis?: number; temporaryPath?: string } = {},
+  ) {
     this.ocrPath = ocrPath;
+    this.ocrTimeoutMillis = options.ocrTimeoutMillis ?? 30_000;
+    this.temporaryPath = options.temporaryPath ?? tmpdir();
   }
   async close() {
     await this.exif.end();
@@ -376,20 +539,12 @@ export class MediaTools {
     duration: number,
     settings: Settings,
   ) {
-    const directory = await mkdtemp(join(tmpdir(), "camviewer-ocr-"));
-    const evidence: {
-      offset: number;
-      text: string;
-      confidence: number;
-      date: string | null;
-    }[] = [];
-    const worker = await createWorker("eng", 1, {
-      langPath: this.ocrPath,
-      gzip: false,
-      cachePath: directory,
-    });
+    const directory = await mkdtemp(join(this.temporaryPath, "camviewer-ocr-"));
+    const evidence: OverlayEvidence[] = [];
+    let worker: OcrSession | undefined;
     try {
-      await worker.setParameters({ tessedit_pageseg_mode: PSM.SINGLE_LINE });
+      worker = new OcrSession(this.ocrPath, directory);
+      await worker.request({ initialize: true }, this.ocrTimeoutMillis);
       for (const offset of kind === "image"
         ? [0]
         : [0, 1, 2].filter((value) => value < duration || value === 0)) {
@@ -410,54 +565,75 @@ export class MediaTools {
           ]);
         }
         const input = kind === "image" ? path : frame;
-        const info = await sharp(input)
-          .rotate()
-          .toBuffer({ resolveWithObject: true });
+        const info = await sharp(input, {
+          limitInputPixels: 100_000_000,
+        }).metadata();
+        const swapped =
+          (info.orientation ?? 1) >= 5 && (info.orientation ?? 1) <= 8;
+        const width = swapped ? info.height : info.width;
+        const height = swapped ? info.width : info.height;
+        if (!width || !height)
+          throw new Error("OCR image dimensions are unavailable.");
         const crop = settings.crop;
-        const region = await sharp(info.data)
+        const cropWidth = Math.max(1, Math.floor(width * crop.width));
+        const cropHeight = Math.max(1, Math.floor(height * crop.height));
+        if (cropWidth * cropHeight > 8_000_000)
+          throw new Error(
+            "OCR crop is too large. Select a smaller timestamp region.",
+          );
+        const cropped = await sharp(input, { limitInputPixels: 100_000_000 })
+          .rotate()
           .extract({
-            left: Math.floor(info.info.width * crop.x),
-            top: Math.floor(info.info.height * crop.y),
-            width: Math.max(1, Math.floor(info.info.width * crop.width)),
-            height: Math.max(1, Math.floor(info.info.height * crop.height)),
+            left: Math.floor(width * crop.x),
+            top: Math.floor(height * crop.y),
+            width: cropWidth,
+            height: cropHeight,
           })
-          .resize({ width: 1800 })
-          .grayscale()
           .png()
           .toBuffer();
-        const result = await worker.recognize(region);
-        const parsed = parseOverlay(
-          result.data.text,
-          settings.dateOrder,
-          settings.utcOffsetMinutes,
-        );
-        evidence.push({
-          offset,
-          text: result.data.text.trim(),
-          confidence: result.data.confidence,
-          date: parsed
-            ? new Date(new Date(parsed).getTime() - offset * 1000).toISOString()
-            : null,
-        });
+        for (const variant of kind === "image"
+          ? ["original", "grayscale", "contrast", "threshold", "inverted"]
+          : ["grayscale"]) {
+          let region = cropped;
+          if (variant !== "original") {
+            const pipeline = sharp(cropped)
+              .resize({ width: 1800, height: 360, fit: "inside" })
+              .grayscale();
+            if (["contrast", "threshold", "inverted"].includes(variant))
+              pipeline.normalise();
+            if (variant === "threshold") pipeline.threshold(150);
+            if (variant === "inverted") pipeline.negate();
+            region = await pipeline.png().toBuffer();
+          }
+          const result = await worker.request(
+            { image: region },
+            this.ocrTimeoutMillis,
+          );
+          const parsed = parseOverlay(
+            result.text,
+            settings.dateOrder,
+            settings.utcOffsetMinutes,
+          );
+          evidence.push({
+            offset,
+            variant,
+            text: result.text.trim(),
+            confidence: result.confidence,
+            date: parsed
+              ? new Date(
+                  new Date(parsed).getTime() - offset * 1000,
+                ).toISOString()
+              : null,
+          });
+        }
       }
-      const valid = evidence.filter(
-        (item) =>
-          item.date &&
-          item.confidence >= 60 &&
-          new Date(item.date).getTime() <= Date.now() + 86_400_000,
-      );
-      const agreed = valid.find(
-        (item) =>
-          valid.filter(
-            (other) =>
-              Math.abs(Date.parse(other.date!) - Date.parse(item.date!)) <=
-              1000,
-          ).length >= (kind === "image" ? 1 : 2),
-      );
-      return { date: agreed?.date ?? null, evidence };
+      return { date: agreeOverlay(evidence, kind), evidence };
     } finally {
-      await worker.terminate();
-      await rm(directory, { recursive: true, force: true });
+      try {
+        await worker?.close();
+      } finally {
+        await rm(directory, { recursive: true, force: true });
+      }
     }
   }
 }
