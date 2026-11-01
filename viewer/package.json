@@ -13,7 +13,8 @@
     "typecheck": "tsc --noEmit",
     "test": "node --experimental-strip-types --test src/main/*.test.ts",
     "test:desktop": "node --experimental-strip-types scripts/desktop-test.ts",
-    "package": "npm run build && electron-builder --dir"
+    "package": "npm run build && electron-builder --dir",
+    "date": "node --experimental-strip-types scripts/media-date.ts"
   },
   "build": {
     "appId": "org.camviewer.desktop",

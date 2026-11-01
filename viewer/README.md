@@ -114,6 +114,14 @@ For a packaged-app regression, set `CAMVIEWER_PACKAGED_EXECUTABLE` to its actual
 executable before running `test:desktop`. Build for each target OS/architecture
 with the matching native tools rather than copying this machine's dependencies.
 
+## Date Extraction
+
+Date extraction from image and video overlays is performed using `tesseract.js`.  When there are issues extracting the information, using the following in the command line can help with debugging.
+
+```sh
+npm --prefix viewer run date -- "/path/to/file/filename"
+```
+
 ## Limits
 
 Automatic date repair requires an explicit overlay flag, crop, date order, and

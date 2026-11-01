@@ -68,6 +68,7 @@ info/
 changes/
 /config.json
 data/*.*
+data/thumbnails/*.*
 files/*.*
 in/*.*
 out/*.*

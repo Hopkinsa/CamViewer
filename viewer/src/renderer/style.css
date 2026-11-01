@@ -332,7 +332,7 @@ nav {
   background: linear-gradient(180deg, #fafbfa 0, #f6f7f6 280px);
 }
 .page-heading {
-  padding: 32px 32px 25px;
+  padding: 25px 32px 18px 32px;
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -357,6 +357,9 @@ nav {
   gap: 10px;
   padding-bottom: 18px;
   border-bottom: 1px solid var(--line);
+}
+.main-panel:has(.page-heading[hidden]) .toolbar {
+  padding-top: 25px;
 }
 .search {
   display: flex;
@@ -1182,11 +1185,14 @@ select {
     grid-template-columns: minmax(0, 1fr) 270px;
   }
   .page-heading {
-    padding: 25px 22px;
+    padding: 25px 22px 18px 22px;
   }
   .toolbar {
     margin: 0 22px;
     gap: 8px;
+  }
+  .main-panel:has(.page-heading[hidden]) .toolbar {
+    padding-top: 25px;
   }
   .grid-area {
     padding-left: 22px;
@@ -1233,7 +1239,10 @@ select {
     box-shadow: -8px 0 30px #283b231a;
   }
   .page-heading {
-    padding: 23px 20px;
+    padding: 23px 20px 18px 20px;
+  }
+  .main-panel:has(.page-heading[hidden]) .toolbar {
+    padding-top: 23px;
   }
   .toolbar {
     margin: 0 20px;
@@ -1294,13 +1303,16 @@ select {
     gap: 8px;
   }
   .page-heading {
-    padding-top: 20px;
+    padding: 20px 20px 18px 20px;
   }
   .page-heading p {
     font-size: 11px;
   }
   .toolbar {
     gap: 7px;
+  }
+  .main-panel:has(.page-heading[hidden]) .toolbar {
+    padding-top: 20px;
   }
   .sort-select {
     display: none;
