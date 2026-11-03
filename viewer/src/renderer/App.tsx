@@ -59,6 +59,16 @@ const dateLabel = (value: string | null) =>
         timeStyle: "short",
       })
     : "Date needs review";
+const pageDateLabel = (value: number) => {
+  const date = new Date(value);
+  const pad = (part: number) => String(part).padStart(2, "0");
+  return `${pad(date.getDate())}/${pad(date.getMonth() + 1)}/${String(date.getFullYear()).padStart(4, "0")} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+};
+const hiddenWarnings = new Set([
+  "Original embedded modification timestamp was missing or invalid.",
+  "Capture time repaired from the selected overlay profile. Verify before accepting.",
+  "Filesystem creation and modification dates updated.",
+]);
 
 export function App() {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
@@ -238,6 +248,14 @@ export function App() {
   const selectedIds = selection;
   const current =
     detail?.id === focused && detail.state === view ? detail : null;
+  const warnings =
+    current?.warnings.filter((warning) => !hiddenWarnings.has(warning)) ?? [];
+  const pageDates = visible
+    .map((item) => (item.captureDate ? Date.parse(item.captureDate) : NaN))
+    .filter(Number.isFinite);
+  const pageDateRange = pageDates.length
+    ? `${pageDateLabel(Math.min(...pageDates))} - ${pageDateLabel(Math.max(...pageDates))}`
+    : "";
   const viewing = viewerOpen && !!current;
   const display = snapshot?.settings.display ?? {
     pageHeading: true,
@@ -797,14 +815,6 @@ export function App() {
                             )}
                           </span>
                         )}
-                        {item.hasWarnings && (
-                          <span
-                            className="warning-badge"
-                            title="Review metadata warnings"
-                          >
-                            <CircleAlert size={13} />
-                          </span>
-                        )}
                       </span>
                       <span className="card-name">{item.name}</span>
                       <span className="card-meta">
@@ -958,9 +968,9 @@ export function App() {
                           )}
                         </div>
                       </div>
-                      {current.warnings.length > 0 && (
+                      {warnings.length > 0 && (
                         <div className="warnings">
-                          {current.warnings.map((warning, index) => (
+                          {warnings.map((warning, index) => (
                             <p key={index}>
                               <CircleAlert size={13} />
                               {warning}
@@ -1058,6 +1068,7 @@ export function App() {
               {total ? actualPage * pageSize + 1 : 0}–
               {Math.min((actualPage + 1) * pageSize, total)} of {total}
             </span>
+            <span className="page-date-range">{pageDateRange}</span>
             <div className="pagination">
               <button
                 className="icon small"

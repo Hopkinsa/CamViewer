@@ -22,6 +22,47 @@ assert.deepEqual(imported.errors, []);
 const accepted = [...imported.succeeded.slice(0, 12), imported.succeeded[13]];
 await library.accept(accepted, "root");
 await library.saveSettings({ ...library.settings(), pageSize: 12 });
+const suppressedWarnings = [
+  "Original embedded modification timestamp was missing or invalid.",
+  "Capture time repaired from the selected overlay profile. Verify before accepting.",
+  "Filesystem creation and modification dates updated.",
+];
+for (const [index, id] of accepted.entries()) {
+  const media = library.rows().find((row) => row.id === id)!;
+  library.put({
+    ...media,
+    captureDate:
+      index === 0
+        ? null
+        : index === 1
+          ? "invalid"
+          : new Date(Date.UTC(2026, 0, index + 1, 14, 5)).toISOString(),
+    warnings: [...suppressedWarnings, "Timestamp needs manual review."],
+  });
+}
+const reviewMedia = library.rows().find((row) => row.state === "review")!;
+library.put({ ...reviewMedia, captureDate: null, warnings: suppressedWarnings });
+const expectedRange = (offset: number) => {
+  const dates = library
+    .query({ state: "gallery", sort: "date", offset, limit: 12 })
+    .media.map((media) => Date.parse(media.captureDate ?? ""))
+    .filter(Number.isFinite)
+    .sort((left, right) => left - right);
+  const format = (value: number) =>
+    new Date(value)
+      .toLocaleString("en-GB", {
+        day: "2-digit",
+        month: "2-digit",
+        year: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+        hourCycle: "h23",
+      })
+      .replace(",", "");
+  return dates.length ? `${format(dates[0])} - ${format(dates.at(-1)!)}` : "";
+};
+const firstPageRange = expectedRange(0);
+const secondPageRange = expectedRange(12);
 await library.close();
 await mkdir("test-results", { recursive: true });
 const packagedExecutable = process.env.CAMVIEWER_PACKAGED_EXECUTABLE;
@@ -44,20 +85,49 @@ try {
     page.getByRole("heading", { name: "Local gallery", exact: true }),
   ).toBeVisible();
   await expect(page.locator(".media-card")).toHaveCount(12);
+  await expect(page.locator(".page-date-range")).toHaveText(firstPageRange);
+  await expect(page.locator(".warning-badge")).toHaveCount(0);
+  const footer = (await page.locator(".collection-footer").boundingBox())!;
+  const dateRange = (await page.locator(".page-date-range").boundingBox())!;
+  assert.ok(
+    Math.abs(dateRange.x + dateRange.width / 2 - footer.x - footer.width / 2) < 1,
+  );
   await page
     .getByRole("button", { name: "Select all matching", exact: true })
     .click();
   await expect(page.locator(".batch-bar")).toContainText("13 selected");
   await page.getByTitle("Next page", { exact: true }).click();
   await expect(page.locator(".media-card")).toHaveCount(1);
+  await expect(page.locator(".page-date-range")).toHaveText(secondPageRange);
   await page.getByTitle("Previous page", { exact: true }).click();
+  await expect(page.locator(".page-date-range")).toHaveText(firstPageRange);
   await page
     .locator(".media-card")
     .filter({ hasText: "IMAGE" })
     .first()
     .click();
   await expect(page.locator(".inspector.has-current")).toBeVisible();
+  await expect(page.locator(".warnings")).toHaveText(
+    "Timestamp needs manual review.",
+  );
   await page.screenshot({ path: "test-results/desktop.png" });
+  await app.evaluate(({ BrowserWindow }) => {
+    const window = BrowserWindow.getAllWindows()[0];
+    window.setMinimumSize(360, 560);
+    window.setContentSize(390, 780);
+  });
+  const narrowRange = (await page.locator(".page-date-range").boundingBox())!;
+  const pagination = (await page.locator(".pagination").boundingBox())!;
+  assert.ok(narrowRange.y >= pagination.y + pagination.height);
+  assert.ok(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth,
+    ),
+  );
+  await page.screenshot({ path: "test-results/footer-mobile.png" });
+  await app.evaluate(({ BrowserWindow }) => {
+    BrowserWindow.getAllWindows()[0].setSize(1440, 920);
+  });
   await page.getByTitle("Filters", { exact: true }).click();
   await page
     .getByRole("combobox", { name: "Media type" })
@@ -153,6 +223,10 @@ try {
   await page.getByTitle("Clear search", { exact: true }).click();
   await page.getByRole("button", { name: /Review imports/ }).click();
   await expect(page.locator(".media-card")).toHaveCount(1);
+  await expect(page.locator(".page-date-range")).toBeEmpty();
+  await page.locator(".media-card").first().click();
+  await expect(page.locator(".inspector.has-current")).toBeVisible();
+  await expect(page.locator(".warnings")).toHaveCount(0);
   await page
     .getByRole("button", { name: "Select all matching", exact: true })
     .click();
