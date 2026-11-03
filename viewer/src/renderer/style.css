@@ -330,6 +330,7 @@ nav {
   flex-direction: column;
   position: relative;
   background: linear-gradient(180deg, #fafbfa 0, #f6f7f6 280px);
+  container-type: inline-size;
 }
 .page-heading {
   padding: 25px 32px 18px 32px;
@@ -584,18 +585,6 @@ select {
   padding: 3px 5px;
   border-radius: 3px;
 }
-.warning-badge {
-  position: absolute;
-  top: 8px;
-  right: 8px;
-  display: grid;
-  place-items: center;
-  width: 20px;
-  height: 20px;
-  background: #fff9e6d9;
-  color: #9a782d;
-  border-radius: 4px;
-}
 .inspector {
   border-left: 1px solid var(--line);
   background: #fff;
@@ -808,15 +797,34 @@ select {
   margin-top: 6px;
 }
 .collection-footer {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
   align-items: center;
-  justify-content: space-between;
+  gap: 8px;
   padding: 11px 32px;
   border-top: 1px solid var(--line);
   font-size: 10px;
   color: #929b90;
   background: #fafbfa;
   min-height: 49px;
+}
+.page-date-range {
+  text-align: center;
+}
+.collection-footer .pagination {
+  justify-self: end;
+}
+@container (max-width: 600px) {
+  .collection-footer {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+  .page-date-range {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+  .page-date-range:empty {
+    display: none;
+  }
 }
 .pagination {
   display: flex;
