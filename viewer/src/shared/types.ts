@@ -58,6 +58,7 @@ export interface Snapshot {
   offset: number;
   counts: Record<View, number>;
   folders: Folder[];
+  tags: string[];
   jobs: Job[];
   settings: Settings;
   workspace: string;
@@ -104,6 +105,14 @@ export interface API {
   accept(ids: string[], folderId: string): Promise<BatchResult>;
   remove(ids: string[]): Promise<BatchResult>;
   exportFiles(ids: string[]): Promise<BatchResult>;
+  transfer(
+    ids: string[],
+    folderId: string,
+    operation: "copy" | "move",
+  ): Promise<BatchResult>;
+  createTag(name: string): Promise<void>;
+  renameTag(name: string, replacement: string): Promise<void>;
+  removeTag(name: string): Promise<void>;
   rename(id: string, name: string): Promise<void>;
   update(ids: string[], patch: MediaPatch): Promise<void>;
   createFolder(name: string, parentId: string): Promise<void>;

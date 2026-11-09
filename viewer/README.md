@@ -54,14 +54,29 @@ disable it to work around certificate errors.
    inspector. Its fixed 110px thumbnail ribbon contains the open file's folder,
    including files outside the current search/filter/page. Click a thumbnail to
    navigate, use the arrows or horizontal scrolling, and close with the X button.
+   Thumbnail selection keeps the ribbon in place. Previous/next controls below
+   both image and video previews follow the same folder and sort order and
+   reveal the active thumbnail, including across ribbon pages.
 6. **Edit metadata** changes selected database records. Tags are comma-separated;
    capture dates use UTC; the JSON editor replaces the metadata object when
    enabled. Clearing metadata clears the database fields, not embedded tags or
    the original media bytes.
+   In the inspector, use **Add tags** to enter one or more comma-separated tags
+   with suggestions from the library catalog; the X on a tag removes that
+   assignment from the current file.
 7. **Save copies** exports the selected files and metadata sidecars to a native
    directory picker. Folder controls create, rename, or permanently delete
    folders and their contents. Folder deletion includes unindexed files and
    always requires confirmation.
+8. **Copy to** and **Move to** operate on selected gallery files. Their folder
+   picker mirrors the sidebar hierarchy. Copies retain metadata and tags with
+   a new library identity; moves retain the existing identity. Filename
+   collisions receive a numeric suffix. Accept review files before transferring.
+
+In **Settings > Tags**, create, rename, and delete library tags. These actions
+save immediately. Renaming updates all assigned files; deleting a tag requires
+confirmation and removes assignments without deleting media. Unused tags remain
+available for later assignment.
 
 In **Settings > Display Settings**, save the default gallery thumbnail size and
 sort order, and toggle the page heading, toolbar, and status bar. These choices
@@ -98,13 +113,17 @@ npm --prefix viewer test
 npm --prefix viewer run typecheck
 npm --prefix viewer run build
 npm --prefix viewer run test:desktop
+npm --prefix viewer run test:desktop -- --ui-amendments
 npm --prefix viewer start
 npm --prefix viewer run package
 ```
 
 Desktop checks require a graphical session and use temporary copies of the
-supplied fixtures. Screenshots are written to `viewer/test-results/`. Packaging
-creates an unpacked application under `viewer/release/`. The macOS ARM64 bundle
+supplied fixtures. Screenshots are written to `viewer/test-results/`.
+The `--ui-amendments` mode generates temporary image/video fixtures and checks
+ribbon stability, preview navigation, tag maintenance, and batch folder transfers
+on desktop and narrow viewports without the supplied sample files.
+Packaging creates an unpacked application under `viewer/release/`. The macOS ARM64 bundle
 was exercised with real imports, OCR, playback, motion analysis, and restart
 persistence. It is unsigned and not notarized. Windows/Linux packaging and
 creation-time behavior still require native platform verification; cross-platform

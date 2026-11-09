@@ -10,9 +10,11 @@ import {
   ChevronLeft,
   ChevronRight,
   CircleAlert,
+  Copy,
   Folder,
   FolderOpen,
   FolderPlus,
+  FolderInput,
   Image as ImageIcon,
   Inbox,
   Library,
@@ -26,6 +28,7 @@ import {
   Settings2,
   SlidersHorizontal,
   Trash2,
+  Tags,
   Video,
   X,
   ZoomIn,
@@ -35,6 +38,7 @@ import {
 } from "lucide-react";
 import type {
   BatchResult,
+  Folder as LibraryFolder,
   Media,
   MediaQuery,
   MediaPage,
@@ -90,6 +94,7 @@ export function App() {
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [transfer, setTransfer] = useState<"copy" | "move" | null>(null);
   const [activityOpen, setActivityOpen] = useState(false);
   const [navOpen, setNavOpen] = useState(false);
   const [modal, setModal] = useState<{
@@ -109,6 +114,7 @@ export function App() {
   });
   const centeredFile = useRef<string | null>(null);
   const [ribbonOffset, setRibbonOffset] = useState<number | null>(null);
+  const ribbonCache = useRef<{ key: string; page: MediaPage } | null>(null);
   const loadRef = useRef<() => Promise<void>>(async () => {});
   const flight = useRef<Promise<void> | null>(null);
   const pending = useRef(false);
@@ -165,18 +171,28 @@ export function App() {
       if (viewerOpen && (!selected || selected.state !== view))
         setViewerOpen(false);
       if (viewerOpen && selected && selected.state === view) {
-        const nextRibbon = await api.query({
-          state: view,
-          folderId: view === "gallery" ? selected.folderId : undefined,
-          exactFolder: true,
-          sort,
-          limit: 60,
-          ...(ribbonOffset === null
-            ? { anchorId: selected.id }
-            : { offset: ribbonOffset }),
-        });
-        if (version.current === requestVersion)
+        const key = `${view}:${selected.folderId}:${sort}:${ribbonOffset}`;
+        const nextRibbon =
+          ribbonCache.current?.key === key
+            ? ribbonCache.current.page
+            : await api.query({
+                state: view,
+                folderId: view === "gallery" ? selected.folderId : undefined,
+                exactFolder: true,
+                sort,
+                limit: 60,
+                ...(ribbonOffset === null
+                  ? { anchorId: selected.id }
+                  : { offset: ribbonOffset }),
+              });
+        if (version.current === requestVersion) {
+          ribbonCache.current = {
+            key: `${view}:${selected.folderId}:${sort}:${nextRibbon.offset}`,
+            page: nextRibbon,
+          };
           setRibbon({ ...nextRibbon, focusId: selected.id });
+          setRibbonOffset(nextRibbon.offset);
+        }
       } else setRibbon({ media: [], offset: 0, total: 0 });
     };
     void refresh();
@@ -209,6 +225,7 @@ export function App() {
       if (timer) return;
       timer = setTimeout(() => {
         timer = undefined;
+        ribbonCache.current = null;
         void refresh();
       }, 250);
     });
@@ -270,7 +287,6 @@ export function App() {
       viewerOpen &&
       focused &&
       ribbon.focusId === focused &&
-      ribbonOffset === null &&
       centeredFile.current !== focused
     ) {
       const element = ribbonRef.current?.querySelector(
@@ -284,7 +300,7 @@ export function App() {
   }, [viewerOpen, focused, current?.id, ribbon, ribbonOffset]);
   useEffect(() => {
     setRibbonOffset(null);
-  }, [focused, sort]);
+  }, [viewerOpen, sort]);
   useEffect(() => {
     let disposed = false;
     setEditorMedia(null);
@@ -316,6 +332,7 @@ export function App() {
       if (result?.errors?.length)
         setError(result.errors.map((item) => item.message).join("\n"));
       else if (success) setNotice(success);
+      ribbonCache.current = null;
       await refresh();
       if (selection.length) {
         const checked = new Set(selection);
@@ -339,6 +356,42 @@ export function App() {
     setFocused(null);
     setNavOpen(false);
   }
+  async function navigate(direction: -1 | 1) {
+    if (!current || !api) return;
+    setBusy(true);
+    try {
+      const options: MediaQuery = {
+        state: view,
+        folderId: view === "gallery" ? current.folderId : undefined,
+        exactFolder: true,
+        sort,
+      };
+      const neighbors = await api.query({
+        ...options,
+        anchorId: current.id,
+        limit: 3,
+      });
+      const index = neighbors.media.findIndex((item) => item.id === current.id);
+      const next = neighbors.media[index + direction];
+      if (!next) return;
+      if (viewing && !ribbonFiles.some((item) => item.id === next.id))
+        setRibbonOffset(null);
+      setFocused(next.id);
+      setSelection([next.id]);
+    } catch (failure) {
+      setError(String(failure));
+    } finally {
+      setBusy(false);
+    }
+  }
+  const ribbonIndex = ribbonFiles.findIndex((item) => item.id === current?.id);
+  const previousDisabled =
+    busy || (viewing && ribbonIndex === 0 && ribbon.offset === 0);
+  const nextDisabled =
+    busy ||
+    (viewing &&
+      ribbonIndex === ribbonFiles.length - 1 &&
+      ribbon.offset + ribbonFiles.length >= ribbon.total);
   function choose(
     item: MediaSummary,
     event: React.MouseEvent | React.KeyboardEvent,
@@ -758,6 +811,10 @@ export function App() {
                   key={current.id}
                   media={current}
                   reportError={setError}
+                  previous={() => void navigate(-1)}
+                  next={() => void navigate(1)}
+                  previousDisabled={previousDisabled}
+                  nextDisabled={nextDisabled}
                 />
               ) : visible.length ? (
                 <div
@@ -897,6 +954,10 @@ export function App() {
                         key={current.id}
                         media={current}
                         reportError={setError}
+                        previous={() => void navigate(-1)}
+                        next={() => void navigate(1)}
+                        previousDisabled={previousDisabled}
+                        nextDisabled={nextDisabled}
                       />
                     )}
                     <div className="inspector-content">
@@ -956,17 +1017,15 @@ export function App() {
                             <Pencil size={14} />
                           </button>
                         </div>
-                        <div className="tag-list">
-                          {current.tags.length ? (
-                            current.tags.map((tag) => (
-                              <span className="tag" key={tag}>
-                                {tag}
-                              </span>
-                            ))
-                          ) : (
-                            <span className="muted">No tags added</span>
-                          )}
-                        </div>
+                        <InspectorTags
+                          key={current.id}
+                          media={current}
+                          catalog={snapshot?.tags ?? []}
+                          busy={busy}
+                          save={(tags) =>
+                            perform(() => api!.update([current.id], { tags }))
+                          }
+                        />
                       </div>
                       {warnings.length > 0 && (
                         <div className="warnings">
@@ -1024,6 +1083,7 @@ export function App() {
                     aria-current={current.id === item.id ? "true" : undefined}
                     title={item.name}
                     onClick={() => {
+                      centeredFile.current = item.id;
                       setFocused(item.id);
                       setSelection([item.id]);
                     }}
@@ -1098,6 +1158,29 @@ export function App() {
                 {selectedIds.length} selected
               </span>
               <div className="batch-actions">
+                {view === "gallery" &&
+                  (["copy", "move"] as const).map((operation) => (
+                    <button
+                      key={operation}
+                      className="secondary"
+                      title={
+                        operation === "copy"
+                          ? "Copy to folder"
+                          : "Move to folder"
+                      }
+                      disabled={busy}
+                      onClick={() => setTransfer(operation)}
+                    >
+                      {operation === "copy" ? (
+                        <Copy size={16} />
+                      ) : (
+                        <FolderInput size={16} />
+                      )}
+                      <span>
+                        {operation === "copy" ? "Copy to" : "Move to"}
+                      </span>
+                    </button>
+                  ))}
                 {view === "review" && (
                   <>
                     <select
@@ -1210,6 +1293,14 @@ export function App() {
       {settingsOpen && snapshot && (
         <SettingsDialog
           settings={snapshot.settings}
+          tags={snapshot.tags}
+          busy={busy}
+          error={error}
+          createTag={(name) => perform(() => api!.createTag(name))}
+          renameTag={(name, replacement) =>
+            perform(() => api!.renameTag(name, replacement))
+          }
+          removeTag={(name) => perform(() => api!.removeTag(name))}
           close={() => setSettingsOpen(false)}
           save={(value) =>
             perform(async () => {
@@ -1219,6 +1310,26 @@ export function App() {
               setSettingsOpen(false);
             })
           }
+        />
+      )}
+      {transfer && snapshot && (
+        <TransferDialog
+          operation={transfer}
+          folders={snapshot.folders}
+          initialFolder={folder}
+          count={selectedIds.length}
+          close={() => setTransfer(null)}
+          submit={(destination) => {
+            const operation = transfer;
+            const ids = [...selectedIds];
+            setTransfer(null);
+            void perform(
+              () => api!.transfer(ids, destination, operation),
+              operation === "copy"
+                ? "Selected files copied."
+                : "Selected files moved.",
+            );
+          }}
         />
       )}
       {modal && (
@@ -1292,15 +1403,27 @@ export function App() {
 
 function SettingsDialog({
   settings,
+  tags,
+  busy,
+  error,
+  createTag,
+  renameTag,
+  removeTag,
   close,
   save,
 }: {
   settings: Settings;
+  tags: string[];
+  busy: boolean;
+  error: string;
+  createTag: (name: string) => Promise<void>;
+  renameTag: (name: string, replacement: string) => Promise<void>;
+  removeTag: (name: string) => Promise<void>;
   close: () => void;
   save: (value: Settings) => Promise<void>;
 }) {
   const [draft, setDraft] = useState(settings);
-  const [tab, setTab] = useState<"library" | "display">("library");
+  const [tab, setTab] = useState<"library" | "display" | "tags">("library");
   return (
     <div className="modal-backdrop">
       <form
@@ -1329,6 +1452,17 @@ function SettingsDialog({
           role="tablist"
           aria-label="Preferences sections"
         >
+          <button
+            type="button"
+            role="tab"
+            id="tags-tab"
+            aria-selected={tab === "tags"}
+            aria-controls="tag-settings"
+            onClick={() => setTab("tags")}
+          >
+            <Tags size={16} />
+            Tags
+          </button>
           <button
             type="button"
             role="tab"
@@ -1535,11 +1669,30 @@ function SettingsDialog({
             </label>
           ))}
         </div>
+        <div
+          role="tabpanel"
+          id="tag-settings"
+          aria-labelledby="tags-tab"
+          hidden={tab !== "tags"}
+        >
+          {error && (
+            <p className="danger" role="alert">
+              {error}
+            </p>
+          )}
+          <TagManager
+            tags={tags}
+            busy={busy}
+            create={createTag}
+            rename={renameTag}
+            remove={removeTag}
+          />
+        </div>
         <div className="dialog-actions">
           <button className="secondary" type="button" onClick={close}>
             Cancel
           </button>
-          <button className="primary" type="submit">
+          <button className="primary" type="submit" disabled={busy}>
             <Check size={16} />
             Save settings
           </button>
@@ -1552,9 +1705,17 @@ function SettingsDialog({
 function FilePreview({
   media,
   reportError,
+  previous,
+  next,
+  previousDisabled,
+  nextDisabled,
 }: {
   media: Media;
   reportError: (message: string) => void;
+  previous: () => void;
+  next: () => void;
+  previousDisabled: boolean;
+  nextDisabled: boolean;
 }) {
   const [zoom, setZoom] = useState(1);
   const [rotation, setRotation] = useState(0);
@@ -1579,48 +1740,372 @@ function FilePreview({
           <MotionPlayer media={media} />
         )}
       </div>
-      {media.kind === "image" && (
-        <div className="preview-controls">
+      <div className="preview-controls">
+        <button
+          className="icon small"
+          title="Previous file"
+          disabled={previousDisabled}
+          onClick={previous}
+        >
+          <ChevronLeft size={16} />
+        </button>
+        {media.kind === "image" && (
+          <>
+            <button
+              className="icon small"
+              title="Zoom out"
+              onClick={() => setZoom(Math.max(0.25, zoom - 0.25))}
+            >
+              <ZoomOut size={16} />
+            </button>
+            <button
+              className="zoom-label"
+              title="Fit image"
+              onClick={() => {
+                setZoom(1);
+                setRotation(0);
+              }}
+            >
+              {Math.round(zoom * 100)}%
+            </button>
+            <button
+              className="icon small"
+              title="Zoom in"
+              onClick={() => setZoom(Math.min(5, zoom + 0.25))}
+            >
+              <ZoomIn size={16} />
+            </button>
+            <button
+              className="icon small"
+              title="Rotate clockwise"
+              onClick={() => setRotation(rotation + 90)}
+            >
+              <RotateCw size={16} />
+            </button>
+            <button
+              className="icon small"
+              title="Fullscreen image"
+              onClick={() => void preview.current?.requestFullscreen()}
+            >
+              <Maximize size={16} />
+            </button>
+          </>
+        )}
+        <button
+          className="icon small"
+          title="Next file"
+          disabled={nextDisabled}
+          onClick={next}
+        >
+          <ChevronRight size={16} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function InspectorTags({
+  media,
+  catalog,
+  busy,
+  save,
+}: {
+  media: Media;
+  catalog: string[];
+  busy: boolean;
+  save: (tags: string[]) => Promise<void>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState("");
+  return (
+    <>
+      <div className="tag-list">
+        {media.tags.map((tag) => (
+          <span className="tag" key={tag}>
+            <span>{tag}</span>
+            <button
+              className="icon tag-remove"
+              title={`Remove tag ${tag}`}
+              disabled={busy}
+              onClick={() =>
+                void save(media.tags.filter((value) => value !== tag))
+              }
+            >
+              <X size={12} />
+            </button>
+          </span>
+        ))}
+        <button
+          className="icon small bordered"
+          title="Add tags"
+          disabled={busy}
+          onClick={() => setOpen(!open)}
+        >
+          <Plus size={14} />
+        </button>
+      </div>
+      {open && (
+        <form
+          className="tag-add"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void save([
+              ...new Set([
+                ...media.tags,
+                ...draft
+                  .split(",")
+                  .map((tag) => tag.trim())
+                  .filter(Boolean),
+              ]),
+            ]);
+            setDraft("");
+            setOpen(false);
+          }}
+        >
+          <label>
+            Add tags (comma-separated)
+            <input
+              autoFocus
+              list="available-tags"
+              maxLength={1000}
+              value={draft}
+              onChange={(event) => setDraft(event.target.value)}
+            />
+          </label>
+          <datalist id="available-tags">
+            {catalog
+              .filter((tag) => !media.tags.includes(tag))
+              .map((tag) => (
+                <option key={tag} value={tag} />
+              ))}
+          </datalist>
           <button
-            className="icon small"
-            title="Zoom out"
-            onClick={() => setZoom(Math.max(0.25, zoom - 0.25))}
+            className="icon bordered"
+            type="submit"
+            title="Apply tags"
+            disabled={busy || !draft.trim()}
           >
-            <ZoomOut size={16} />
+            <Check size={16} />
           </button>
+        </form>
+      )}
+    </>
+  );
+}
+
+function TagManager({
+  tags,
+  busy,
+  create,
+  rename,
+  remove,
+}: {
+  tags: string[];
+  busy: boolean;
+  create: (name: string) => Promise<void>;
+  rename: (name: string, replacement: string) => Promise<void>;
+  remove: (name: string) => Promise<void>;
+}) {
+  const [name, setName] = useState("");
+  const [editing, setEditing] = useState<string | null>(null);
+  const [replacement, setReplacement] = useState("");
+  return (
+    <>
+      <label>
+        New tag
+        <div className="path-input">
+          <input
+            maxLength={100}
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                if (!busy && name.trim()) {
+                  void create(name);
+                  setName("");
+                }
+              }
+            }}
+          />
           <button
-            className="zoom-label"
-            title="Fit image"
+            className="icon bordered"
+            type="button"
+            title="Create tag"
+            disabled={busy || !name.trim()}
             onClick={() => {
-              setZoom(1);
-              setRotation(0);
+              void create(name);
+              setName("");
             }}
           >
-            {Math.round(zoom * 100)}%
-          </button>
-          <button
-            className="icon small"
-            title="Zoom in"
-            onClick={() => setZoom(Math.min(5, zoom + 0.25))}
-          >
-            <ZoomIn size={16} />
-          </button>
-          <button
-            className="icon small"
-            title="Rotate clockwise"
-            onClick={() => setRotation(rotation + 90)}
-          >
-            <RotateCw size={16} />
-          </button>
-          <button
-            className="icon small"
-            title="Fullscreen image"
-            onClick={() => void preview.current?.requestFullscreen()}
-          >
-            <Maximize size={16} />
+            <Plus size={17} />
           </button>
         </div>
-      )}
+      </label>
+      <div className="managed-tags">
+        {!tags.length && <p className="muted">No tags</p>}
+        {tags.map((tag) => (
+          <div className="managed-tag" key={tag}>
+            {editing === tag ? (
+              <>
+                <input
+                  aria-label={`Rename tag ${tag}`}
+                  maxLength={100}
+                  autoFocus
+                  value={replacement}
+                  onChange={(event) => setReplacement(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      if (!busy && replacement.trim()) {
+                        void rename(tag, replacement);
+                        setEditing(null);
+                      }
+                    }
+                  }}
+                />
+                <button
+                  className="icon small"
+                  type="button"
+                  title="Save tag name"
+                  disabled={busy || !replacement.trim()}
+                  onClick={() => {
+                    void rename(tag, replacement);
+                    setEditing(null);
+                  }}
+                >
+                  <Check size={16} />
+                </button>
+                <button
+                  className="icon small"
+                  type="button"
+                  title="Cancel tag rename"
+                  onClick={() => setEditing(null)}
+                >
+                  <X size={16} />
+                </button>
+              </>
+            ) : (
+              <>
+                <span>{tag}</span>
+                <button
+                  className="icon small"
+                  type="button"
+                  title={`Rename tag ${tag}`}
+                  disabled={busy}
+                  onClick={() => {
+                    setEditing(tag);
+                    setReplacement(tag);
+                  }}
+                >
+                  <Pencil size={15} />
+                </button>
+                <button
+                  className="icon small danger"
+                  type="button"
+                  title={`Delete tag ${tag}`}
+                  disabled={busy}
+                  onClick={() => {
+                    if (
+                      window.confirm(
+                        `Delete tag "${tag}" from all files? Media files will not be deleted.`,
+                      )
+                    )
+                      void remove(tag);
+                  }}
+                >
+                  <Trash2 size={15} />
+                </button>
+              </>
+            )}
+          </div>
+        ))}
+      </div>
+    </>
+  );
+}
+
+function TransferDialog({
+  operation,
+  folders,
+  initialFolder,
+  count,
+  close,
+  submit,
+}: {
+  operation: "copy" | "move";
+  folders: LibraryFolder[];
+  initialFolder: string;
+  count: number;
+  close: () => void;
+  submit: (folderId: string) => void;
+}) {
+  const [destination, setDestination] = useState(initialFolder);
+  return (
+    <div className="modal-backdrop">
+      <form
+        className="dialog compact"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="transfer-heading"
+        onSubmit={(event) => {
+          event.preventDefault();
+          submit(destination);
+        }}
+      >
+        <div className="dialog-heading">
+          <h2 id="transfer-heading">
+            {operation === "copy" ? "Copy to folder" : "Move to folder"}
+          </h2>
+          <button
+            className="icon"
+            type="button"
+            title="Close folder picker"
+            onClick={close}
+          >
+            <X size={18} />
+          </button>
+        </div>
+        <p className="muted">{count} selected</p>
+        <div
+          className="folder-list destination-folders"
+          role="radiogroup"
+          aria-label="Destination folder"
+        >
+          {folders.map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              role="radio"
+              aria-checked={destination === item.id}
+              className={`folder-item ${destination === item.id ? "chosen" : ""}`}
+              style={{
+                paddingLeft:
+                  12 +
+                  item.relativePath.split(/[/\\]/).filter(Boolean).length * 9,
+              }}
+              onClick={() => setDestination(item.id)}
+            >
+              <Folder size={16} />
+              <span>{item.name}</span>
+              {destination === item.id && <Check size={15} />}
+            </button>
+          ))}
+        </div>
+        <div className="dialog-actions">
+          <button className="secondary" type="button" onClick={close}>
+            Cancel
+          </button>
+          <button className="primary" type="submit">
+            {operation === "copy" ? (
+              <Copy size={16} />
+            ) : (
+              <FolderInput size={16} />
+            )}
+            {operation === "copy" ? "Copy" : "Move"}
+          </button>
+        </div>
+      </form>
     </div>
   );
 }

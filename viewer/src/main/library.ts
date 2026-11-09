@@ -93,6 +93,7 @@ export class Library {
       CREATE TABLE IF NOT EXISTS settings (id INTEGER PRIMARY KEY CHECK(id=1), data TEXT NOT NULL CHECK(json_valid(data)));
       CREATE TABLE IF NOT EXISTS media (id TEXT PRIMARY KEY, data TEXT NOT NULL CHECK(json_valid(data)));
       CREATE TABLE IF NOT EXISTS folders (id TEXT PRIMARY KEY, data TEXT NOT NULL CHECK(json_valid(data)));
+      CREATE TABLE IF NOT EXISTS tags (name TEXT PRIMARY KEY);
       CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, kind TEXT NOT NULL, state TEXT NOT NULL, message TEXT NOT NULL, payload TEXT NOT NULL, createdAt TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS media_state ON media(json_extract(data,'$.state'));
       CREATE INDEX IF NOT EXISTS media_folder ON media(json_extract(data,'$.state'),json_extract(data,'$.folderId'));
@@ -100,6 +101,7 @@ export class Library {
       CREATE INDEX IF NOT EXISTS media_imported ON media(json_extract(data,'$.state'),json_extract(data,'$.importedAt'),id);
       CREATE INDEX IF NOT EXISTS media_name ON media(json_extract(data,'$.state'),name_key(json_extract(data,'$.name')),id);
       PRAGMA user_version=1;`);
+    this.db.exec("INSERT OR IGNORE INTO tags SELECT value FROM media, json_each(media.data,'$.tags')");
     const defaults: Settings = {
       importPath: join(this.root, 'in'),
       processedPath: join(this.root, 'out'),
@@ -307,6 +309,7 @@ export class Library {
       workspace: this.root,
       settings: this.settings(),
       folders: this.folders(),
+      tags: this.tags(),
       jobs: this.db
         .prepare(
           'SELECT id,kind,state,message,createdAt FROM jobs ORDER BY createdAt DESC LIMIT 50'
@@ -678,6 +681,85 @@ export class Library {
       );
     });
   }
+  async transfer(ids: string[], folderId: string, operation: 'copy' | 'move') {
+    if (operation !== 'copy' && operation !== 'move')
+      throw new Error('Invalid transfer operation.');
+    const folder = this.folders().find((item) => item.id === folderId);
+    if (!folder) throw new Error('Destination folder not found.');
+    return this.batch(ids, async (id) => {
+      const row = this.get(id);
+      if (row.state !== 'gallery')
+        throw new Error('Only gallery files can be copied or moved. Accept imports first.');
+      if (operation === 'move' && row.folderId === folderId) return;
+      const directory = join(this.settings().galleryPath, folder.relativePath);
+      if (!inside(await realpath(this.settings().galleryPath), await realpath(directory)))
+        throw new Error('Destination escapes gallery storage.');
+      const destination = await this.unique(directory, row.name);
+      if (operation === 'move') {
+        await this.move(id, destination, 'gallery', folderId);
+        return;
+      }
+      const source = await this.authorizedPath(id);
+      const updated = { ...row, id: randomUUID(), path: destination, name: basename(destination), folderId };
+      const jobId = this.job('copy', { source, destination, updated, originalId: id }, `Copying ${row.name}`);
+      let copied = false;
+      try {
+        await this.copyVerified(source, destination);
+        copied = true;
+        await copyFile(join(this.cache, `${id}.jpg`), join(this.cache, `${updated.id}.jpg`));
+        this.put(updated);
+        this.finish(jobId, 'completed', `Copied ${updated.name}`);
+      } catch (error) {
+        if (copied) await rm(destination, { force: true });
+        await rm(join(this.cache, `${updated.id}.jpg`), { force: true });
+        this.finish(jobId, 'failed', String(error));
+        throw error;
+      }
+    });
+  }
+  tags(): string[] {
+    return (this.db.prepare(`SELECT name FROM tags UNION SELECT value AS name FROM media, json_each(media.data,'$.tags') ORDER BY name COLLATE NOCASE`).all() as { name: string }[]).map((row) => row.name);
+  }
+  tagName(name: string): string {
+    if (typeof name !== 'string' || !name.trim() || name.trim().length > 100)
+      throw new Error('Tag names must contain 1 to 100 characters.');
+    return name.trim();
+  }
+  async createTag(name: string) {
+    return this.exclusive(async () => {
+      const tag = this.tagName(name);
+      if (this.tags().includes(tag)) throw new Error('A tag with that name already exists.');
+      this.db.prepare('INSERT INTO tags VALUES (?)').run(tag);
+    });
+  }
+  async renameTag(name: string, replacement: string) {
+    return this.changeTag(name, this.tagName(replacement));
+  }
+  async removeTag(name: string) {
+    return this.changeTag(name, null);
+  }
+  async changeTag(name: string, replacement: string | null) {
+    return this.exclusive(async () => {
+      if (!this.tags().includes(name)) throw new Error('Tag not found.');
+      if (name === replacement) return;
+      if (replacement && this.tags().includes(replacement))
+        throw new Error('A tag with that name already exists.');
+      this.db.exec('BEGIN');
+      try {
+        for (const row of this.rows()) {
+          if (!row.tags.includes(name)) continue;
+          row.tags = row.tags.flatMap((tag) => tag === name ? replacement ? [replacement] : [] : [tag]);
+          this.put(row);
+        }
+        this.db.prepare('DELETE FROM tags WHERE name=?').run(name);
+        if (replacement) this.db.prepare('INSERT INTO tags VALUES (?)').run(replacement);
+        this.db.exec('COMMIT');
+      } catch (error) {
+        this.db.exec('ROLLBACK');
+        throw error;
+      }
+    });
+  }
   /*
     async removeOne(id: string) {
     const row = this.get(id);
@@ -796,6 +878,8 @@ export class Library {
           row.tags = [
             ...new Set(patch.tags.map((tag) => tag.trim()).filter(Boolean)),
           ];
+        for (const tag of row.tags)
+          this.db.prepare('INSERT OR IGNORE INTO tags VALUES (?)').run(tag);
         if (patch.metadata) row.metadata = patch.metadata;
         if (patch.captureDate !== undefined) {
           row.captureDate = patch.captureDate;
@@ -973,6 +1057,11 @@ export class Library {
             );
           this.put(payload.updated);
           await rm(payload.source, { force: true });
+        } else if (job.kind === 'copy') {
+          if ((await checksum(payload.destination)) !== payload.updated.hash)
+            throw new Error('Recovery copy checksum mismatch; original retained.');
+          await copyFile(join(this.cache, `${payload.originalId}.jpg`), join(this.cache, `${payload.updated.id}.jpg`));
+          this.put(payload.updated);
         } else if (job.kind === 'delete')
           await this.executeDelete(payload.id, payload.path);
         else if (job.kind === 'folder-delete')

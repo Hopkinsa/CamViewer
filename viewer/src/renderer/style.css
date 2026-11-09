@@ -625,6 +625,7 @@ select {
 }
 .preview-controls {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: center;
   gap: 10px;
@@ -694,6 +695,9 @@ select {
   margin-top: 13px;
 }
 .tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   font-size: 10px;
   padding: 4px 8px;
   border: 1px solid #e0e9dc;
@@ -702,6 +706,55 @@ select {
   color: #718365;
   overflow-wrap: anywhere;
   max-width: 100%;
+}
+.tag > span {
+  min-width: 0;
+}
+.tag .tag-remove {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+}
+.tag-add {
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+  margin-top: 10px;
+}
+.tag-add label {
+  flex: 1;
+  min-width: 0;
+  font-size: 10px;
+}
+.tag-add input {
+  width: 100%;
+  min-width: 0;
+  padding: 7px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  margin-top: 6px;
+}
+.managed-tags {
+  max-height: 300px;
+  overflow: auto;
+}
+.managed-tag {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line);
+}
+.managed-tag > span,
+.managed-tag > input {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.destination-folders {
+  max-height: 320px;
+  overflow: auto;
+  margin-top: 16px;
 }
 .muted {
   color: #99a095;
@@ -851,6 +904,7 @@ select {
 }
 .batch-actions {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 9px;
   min-width: 0;
@@ -1230,6 +1284,7 @@ select {
     display: none;
   }
   .collection {
+    position: relative;
     grid-template-columns: 1fr;
   }
   .inspector {
@@ -1371,6 +1426,7 @@ select {
 }
 .preferences-tabs {
   display: flex;
+  flex-wrap: wrap;
   gap: 20px;
   border-bottom: 1px solid var(--line);
   margin-bottom: 18px;
