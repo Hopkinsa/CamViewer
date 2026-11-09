@@ -15,6 +15,11 @@ const api: API = {
   accept: (ids, folderId) => invoke("accept", ids, folderId),
   remove: (ids) => invoke("remove", ids),
   exportFiles: (ids) => invoke("exportFiles", ids),
+  transfer: (ids, folderId, operation) =>
+    invoke("transfer", ids, folderId, operation),
+  createTag: (name) => invoke("createTag", name),
+  renameTag: (name, replacement) => invoke("renameTag", name, replacement),
+  removeTag: (name) => invoke("removeTag", name),
   rename: (id, name) => invoke("rename", id, name),
   update: (ids, patch) => invoke("update", ids, patch),
   createFolder: (name, parentId) => invoke("createFolder", name, parentId),

@@ -331,6 +331,90 @@ test("real image import, review, accept, metadata, export, folders and delete pe
   }
 });
 
+test("tag catalog creation, rename, removal and file assignments persist", async () => {
+  const root = await mkdtemp(join(tmpdir(), "camviewer-tags-"));
+  let library = new Library(root, resolve("../Requirements/application_src/camDate"));
+  try {
+    await library.initialize();
+    const source = join(root, "fixture.jpg");
+    await sharp({ create: { width: 64, height: 48, channels: 3, background: "#427b65" } }).jpeg().toFile(source);
+    const imported = await library.importPaths([source]);
+    assert.deepEqual(imported.errors, []);
+    const [id] = imported.succeeded;
+    await library.createTag(" Unused ");
+    await library.update([id], { tags: ["Trail", "Night", "Trail"] });
+    assert.deepEqual(library.snapshot().tags, ["Night", "Trail", "Unused"]);
+    await assert.rejects(() => library.createTag("Trail"), /already exists/);
+    await assert.rejects(() => library.createTag(" "), /1 to 100/);
+    await assert.rejects(() => library.renameTag("Trail", "Night"), /already exists/);
+    await library.renameTag("Trail", "Woodland");
+    assert.deepEqual(library.get(id).tags, ["Woodland", "Night"]);
+    await library.removeTag("Night");
+    assert.deepEqual(library.get(id).tags, ["Woodland"]);
+    await library.update([id], { tags: [] });
+    assert.deepEqual(library.tags(), ["Unused", "Woodland"]);
+    await library.close();
+    library = new Library(root, resolve("../Requirements/application_src/camDate"));
+    await library.initialize();
+    assert.deepEqual(library.tags(), ["Unused", "Woodland"]);
+    await library.removeTag("Unused");
+    assert.equal(library.rows().length, 1);
+    await access(library.get(id).path);
+  } finally {
+    await library.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("gallery transfers preserve bytes and metadata, resolve collisions and reject escaping folders", async () => {
+  const root = await mkdtemp(join(tmpdir(), "camviewer-transfer-"));
+  const library = new Library(root, resolve("../Requirements/application_src/camDate"));
+  try {
+    await library.initialize();
+    const source = join(root, "fixture.jpg");
+    await sharp({ create: { width: 64, height: 48, channels: 3, background: "#427b65" } }).jpeg().toFile(source);
+    const imported = await library.importPaths([source]);
+    assert.deepEqual(imported.errors, []);
+    const [id] = imported.succeeded;
+    assert.equal((await library.transfer([id], "root", "copy")).errors.length, 1);
+    await library.accept([id], "root");
+    await library.update([id], { tags: ["Trail"], metadata: { title: "Preserved" } });
+    await library.createFolder("Trail", "root");
+    const parent = library.folders().find((item) => item.name === "Trail")!;
+    await library.createFolder("Night", parent.id);
+    const destination = library.folders().find((item) => item.name === "Night")!;
+    const original = library.get(id);
+    const originalBytes = await readFile(original.path);
+    assert.deepEqual((await library.transfer([id], destination.id, "copy")).errors, []);
+    const copied = library.rows().find((item) => item.id !== id)!;
+    assert.equal(copied.folderId, destination.id);
+    assert.deepEqual(copied.tags, original.tags);
+    assert.deepEqual(copied.metadata, original.metadata);
+    assert.equal(copied.captureDate, original.captureDate);
+    assert.deepEqual(await readFile(copied.path), originalBytes);
+    assert.deepEqual(await readFile(join(library.cache, `${copied.id}.jpg`)), await readFile(join(library.cache, `${id}.jpg`)));
+    assert.deepEqual((await library.transfer([id], destination.id, "move")).errors, []);
+    assert.notEqual(library.get(id).path, copied.path);
+    await assert.rejects(access(original.path));
+    assert.deepEqual(await readFile(library.get(id).path), originalBytes);
+    const moved = library.get(id);
+    assert.deepEqual((await library.transfer([id], destination.id, "move")).errors, []);
+    assert.equal(library.get(id).path, moved.path);
+    const outside = join(root, "outside");
+    await mkdir(outside);
+    await symlink(outside, join(library.settings().galleryPath, "escape"), "dir");
+    library.db.prepare("INSERT INTO folders VALUES (?,?)").run("escape", JSON.stringify({ id: "escape", name: "escape", relativePath: "escape" }));
+    for (const operation of ["copy", "move"] as const)
+      assert.equal((await library.transfer([id], "escape", operation)).errors.length, 1);
+    assert.deepEqual(await readdir(outside), []);
+    await assert.rejects(() => library.transfer([id], "missing", "copy"), /not found/);
+    assert.equal(library.rows().length, 2);
+  } finally {
+    await library.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("real video import extracts a thumbnail and keeps the original intact", async () => {
   const root = await mkdtemp(join(tmpdir(), "camviewer-video-"));
   const library = new Library(

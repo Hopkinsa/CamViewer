@@ -5,7 +5,15 @@ import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { _electron as electron, expect } from "@playwright/test";
 import executablePath from "electron";
+import sharp from "sharp";
+import ffmpeg from "ffmpeg-static";
 import { Library } from "../src/main/library.ts";
+import { run } from "../src/main/media.ts";
+
+if (process.argv.includes("--ui-amendments")) {
+  await testUIAmendments();
+  process.exit(0);
+}
 
 const root = await mkdtemp(join(tmpdir(), "camviewer-desktop-"));
 const library = new Library(
@@ -41,7 +49,11 @@ for (const [index, id] of accepted.entries()) {
   });
 }
 const reviewMedia = library.rows().find((row) => row.state === "review")!;
-library.put({ ...reviewMedia, captureDate: null, warnings: suppressedWarnings });
+library.put({
+  ...reviewMedia,
+  captureDate: null,
+  warnings: suppressedWarnings,
+});
 const expectedRange = (offset: number) => {
   const dates = library
     .query({ state: "gallery", sort: "date", offset, limit: 12 })
@@ -90,7 +102,8 @@ try {
   const footer = (await page.locator(".collection-footer").boundingBox())!;
   const dateRange = (await page.locator(".page-date-range").boundingBox())!;
   assert.ok(
-    Math.abs(dateRange.x + dateRange.width / 2 - footer.x - footer.width / 2) < 1,
+    Math.abs(dateRange.x + dateRange.width / 2 - footer.x - footer.width / 2) <
+      1,
   );
   await page
     .getByRole("button", { name: "Select all matching", exact: true })
@@ -656,4 +669,314 @@ try {
 } finally {
   await app.close();
   await rm(root, { recursive: true, force: true });
+}
+
+async function testUIAmendments() {
+  const workspace = await mkdtemp(join(tmpdir(), "camviewer-ui-amendments-"));
+  const fixture = new Library(
+    workspace,
+    resolve("../Requirements/application_src/camDate"),
+  );
+  let desktop: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  try {
+    await fixture.initialize();
+    const source = join(workspace, "image-000.jpg");
+    await sharp({
+      create: { width: 640, height: 480, channels: 3, background: "#427b65" },
+    })
+      .jpeg()
+      .toFile(source);
+    const imported = await fixture.importPaths([source]);
+    assert.deepEqual(imported.errors, []);
+    const [firstId] = imported.succeeded;
+    await fixture.accept([firstId], "root");
+    const original = fixture.get(firstId);
+    for (let index = 1; index < 75; index++) {
+      const id = randomUUID();
+      const name = `image-${String(index).padStart(3, "0")}.jpg`;
+      const path = join(fixture.settings().galleryPath, name);
+      await copyFile(original.path, path);
+      await copyFile(
+        join(fixture.cache, `${firstId}.jpg`),
+        join(fixture.cache, `${id}.jpg`),
+      );
+      fixture.put({ ...original, id, name, path });
+    }
+    assert.ok(ffmpeg);
+    const video = join(workspace, "video-075.mp4");
+    await run(ffmpeg, [
+      "-f",
+      "lavfi",
+      "-i",
+      "testsrc=size=320x240:rate=10",
+      "-t",
+      "1",
+      "-pix_fmt",
+      "yuv420p",
+      video,
+    ]);
+    const videoImport = await fixture.importPaths([video]);
+    assert.deepEqual(videoImport.errors, []);
+    await fixture.accept(videoImport.succeeded, "root");
+    await fixture.createFolder("Trail", "root");
+    const parent = fixture.folders().find((item) => item.name === "Trail")!;
+    await fixture.createFolder("Night", parent.id);
+    const nested = fixture.folders().find((item) => item.name === "Night")!;
+    await fixture.saveSettings({ ...fixture.settings(), defaultSort: "name" });
+    await fixture.close();
+    desktop = await electron.launch({
+      executablePath: executablePath as unknown as string,
+      args: ["."],
+      env: {
+        ...process.env,
+        CAMVIEWER_WORKSPACE: workspace,
+        CAMVIEWER_DEV_URL: "",
+      },
+      timeout: 60_000,
+    });
+    const page = await desktop.firstWindow();
+    const failures: string[] = [];
+    page.on("pageerror", (error) => failures.push(error.message));
+    await mkdir("test-results", { recursive: true });
+    await expect(page.locator(".media-card")).toHaveCount(60);
+    await page.locator(".media-card").first().dblclick();
+    await expect(page.locator(".ribbon-item")).toHaveCount(60);
+    await expect(
+      page.getByTitle("Previous file", { exact: true }),
+    ).toBeDisabled();
+    const initialIds = await page
+      .locator(".ribbon-item")
+      .evaluateAll((items) =>
+        items.map((item) => item.getAttribute("data-media-id")),
+      );
+    await page.locator(".file-ribbon").evaluate((element) => {
+      element.scrollLeft = 800;
+    });
+    const stable = await page.locator(".file-ribbon").evaluate((element) => {
+      const bounds = element.getBoundingClientRect();
+      const item = [
+        ...element.querySelectorAll<HTMLButtonElement>(".ribbon-item"),
+      ].find((candidate) => {
+        const box = candidate.getBoundingClientRect();
+        return box.left >= bounds.left && box.right <= bounds.right;
+      })!;
+      return {
+        id: item.dataset.mediaId!,
+        name: item.title,
+        left: element.scrollLeft,
+        x: item.getBoundingClientRect().x,
+      };
+    });
+    const target = page.locator(`.ribbon-item[data-media-id="${stable.id}"]`);
+    await target.click();
+    await expect(page.locator(".viewer-inspector h2")).toHaveText(stable.name);
+    assert.deepEqual(
+      await page
+        .locator(".ribbon-item")
+        .evaluateAll((items) =>
+          items.map((item) => item.getAttribute("data-media-id")),
+        ),
+      initialIds,
+    );
+    assert.equal(
+      await page
+        .locator(".file-ribbon")
+        .evaluate((element) => element.scrollLeft),
+      stable.left,
+    );
+    assert.ok(Math.abs((await target.boundingBox())!.x - stable.x) <= 1);
+    await page.getByTitle("Next file", { exact: true }).click();
+    await expect(
+      page.locator('.ribbon-item[aria-current="true"]'),
+    ).not.toHaveAttribute("data-media-id", stable.id);
+    await page.getByTitle("Previous file", { exact: true }).click();
+    await expect(
+      page.locator('.ribbon-item[aria-current="true"]'),
+    ).toHaveAttribute("data-media-id", stable.id);
+    await page.locator(".ribbon-item").last().click();
+    await expect(page.locator(".viewer-inspector h2")).toHaveText(
+      "image-059.jpg",
+    );
+    await page.getByTitle("Next file", { exact: true }).click();
+    await expect(page.locator(".viewer-inspector h2")).toHaveText(
+      "image-060.jpg",
+    );
+    await expect(
+      page.locator('.ribbon-item[aria-current="true"]'),
+    ).toHaveAttribute("title", "image-060.jpg");
+    await page.screenshot({
+      path: "test-results/amendments-ribbon-desktop.png",
+    });
+    await page.locator('.ribbon-item[title="video-075.mp4"]').click();
+    await expect(page.locator(".viewer-media video")).toBeVisible();
+    await page.waitForFunction(
+      () => (document.querySelector("video")?.videoWidth ?? 0) > 0,
+    );
+    await expect(page.locator(".viewer-media .preview-controls")).toBeVisible();
+    await expect(page.getByTitle("Next file", { exact: true })).toBeDisabled();
+    await page.getByTitle("Previous file", { exact: true }).click();
+    await expect(page.locator(".viewer-inspector h2")).toHaveText(
+      "image-074.jpg",
+    );
+    await page.getByTitle("Next file", { exact: true }).click();
+    await expect(
+      page.locator('.ribbon-item[aria-current="true"]'),
+    ).toHaveAttribute("title", "video-075.mp4");
+    await page.screenshot({
+      path: "test-results/amendments-video-desktop.png",
+    });
+    await page.getByTitle("Settings", { exact: true }).click();
+    await page.getByRole("tab", { name: "Tags", exact: true }).click();
+    await page
+      .getByRole("textbox", { name: "New tag", exact: true })
+      .fill("Night");
+    await page.getByTitle("Create tag", { exact: true }).click();
+    await expect(page.locator(".managed-tag")).toHaveCount(1);
+    await page
+      .getByRole("textbox", { name: "New tag", exact: true })
+      .fill("Unused");
+    await page.getByTitle("Create tag", { exact: true }).click();
+    await expect(page.locator(".managed-tag")).toHaveCount(2);
+    await page.getByTitle("Close settings", { exact: true }).click();
+    await page.getByTitle("Add tags", { exact: true }).click();
+    await page
+      .getByRole("combobox", {
+        name: "Add tags (comma-separated)",
+        exact: true,
+      })
+      .fill("Night, Trail");
+    await page.getByTitle("Apply tags", { exact: true }).click();
+    await expect(page.locator(".viewer-inspector .tag")).toHaveText([
+      "Night",
+      "Trail",
+    ]);
+    await page.getByTitle("Remove tag Trail", { exact: true }).click();
+    await expect(page.locator(".viewer-inspector .tag")).toHaveText(["Night"]);
+    await page.getByTitle("Settings", { exact: true }).click();
+    await page.getByRole("tab", { name: "Tags", exact: true }).click();
+    await page.getByTitle("Rename tag Night", { exact: true }).click();
+    await page
+      .getByRole("textbox", { name: "Rename tag Night", exact: true })
+      .fill("Nocturnal");
+    await page.getByTitle("Save tag name", { exact: true }).click();
+    await expect(
+      page.getByTitle("Rename tag Nocturnal", { exact: true }),
+    ).toBeVisible();
+    page.once("dialog", (dialog) => void dialog.accept());
+    await page.getByTitle("Delete tag Unused", { exact: true }).click();
+    await expect(page.locator(".managed-tag")).toHaveCount(2);
+    await page.screenshot({ path: "test-results/amendments-tags-desktop.png" });
+    await page.getByTitle("Close settings", { exact: true }).click();
+    await expect(page.locator(".viewer-inspector .tag")).toHaveText([
+      "Nocturnal",
+    ]);
+    await page.getByTitle("Close viewer", { exact: true }).click();
+    await page.locator(".media-card").nth(0).click();
+    await page
+      .locator(".media-card")
+      .nth(1)
+      .click({ modifiers: ["ControlOrMeta"] });
+    await expect(page.locator(".batch-bar")).toContainText("2 selected");
+    const selected = await page.locator(".media-card.is-selected").count();
+    assert.equal(selected, 2);
+    await page.getByTitle("Copy to folder", { exact: true }).click();
+    const picker = page.getByRole("dialog", {
+      name: "Copy to folder",
+      exact: true,
+    });
+    await expect(picker.getByRole("radio")).toHaveCount(3);
+    const parentBox = (await picker
+      .getByRole("radio", { name: "Trail", exact: true })
+      .boundingBox())!;
+    const nestedPadding = await picker
+      .getByRole("radio", { name: "Night", exact: true })
+      .evaluate((element) =>
+        Number.parseFloat(getComputedStyle(element).paddingLeft),
+      );
+    const parentPadding = await picker
+      .getByRole("radio", { name: "Trail", exact: true })
+      .evaluate((element) =>
+        Number.parseFloat(getComputedStyle(element).paddingLeft),
+      );
+    assert.ok(parentBox.width > 0 && nestedPadding > parentPadding);
+    await picker.getByRole("radio", { name: "Night", exact: true }).click();
+    await page.screenshot({
+      path: "test-results/amendments-folders-desktop.png",
+    });
+    await picker.getByRole("button", { name: "Copy", exact: true }).click();
+    await expect
+      .poll(() =>
+        page.evaluate(
+          (folderId) =>
+            window
+              .camviewer!.query({
+                state: "gallery",
+                folderId,
+                exactFolder: true,
+              })
+              .then((result) => result.total),
+          nested.id,
+        ),
+      )
+      .toBe(2);
+    await page.getByTitle("Move to folder", { exact: true }).click();
+    const movePicker = page.getByRole("dialog", {
+      name: "Move to folder",
+      exact: true,
+    });
+    await movePicker.getByRole("radio", { name: "Trail", exact: true }).click();
+    await movePicker.getByRole("button", { name: "Move", exact: true }).click();
+    await expect
+      .poll(() =>
+        page.evaluate(
+          (folderId) =>
+            window
+              .camviewer!.query({
+                state: "gallery",
+                folderId,
+                exactFolder: true,
+              })
+              .then((result) => result.total),
+          parent.id,
+        ),
+      )
+      .toBe(2);
+    await expect(page.locator(".notice.error")).toHaveCount(0);
+    await desktop.evaluate(({ BrowserWindow }) => {
+      const window = BrowserWindow.getAllWindows()[0];
+      window.setMinimumSize(360, 560);
+      window.setContentSize(390, 780);
+    });
+    await page.getByTitle("Copy to folder", { exact: true }).click();
+    assert.ok(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= window.innerWidth,
+      ),
+    );
+    await page.screenshot({
+      path: "test-results/amendments-folders-mobile.png",
+    });
+    await page.getByTitle("Close folder picker", { exact: true }).click();
+    await page.getByTitle("Settings", { exact: true }).click();
+    await page.getByRole("tab", { name: "Tags", exact: true }).click();
+    assert.ok(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= window.innerWidth,
+      ),
+    );
+    await page.screenshot({ path: "test-results/amendments-tags-mobile.png" });
+    await page.getByTitle("Close settings", { exact: true }).click();
+    await expect(page.getByTitle("Next file", { exact: true })).toBeVisible();
+    await page.screenshot({
+      path: "test-results/amendments-preview-mobile.png",
+    });
+    assert.deepEqual(failures, []);
+    console.log(
+      "PASS: stable 60-file ribbon, image/video navigation, tag maintenance and assignments, nested-folder batch copy/move, desktop/mobile screenshots.",
+    );
+  } finally {
+    if (desktop) await desktop.close();
+    if (fixture.db.isOpen) await fixture.close();
+    await rm(workspace, { recursive: true, force: true });
+  }
 }

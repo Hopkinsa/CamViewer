@@ -272,6 +272,16 @@ app
             return library.scan();
           case "accept":
             return library.accept(ids(args[0]), text(args[1]));
+          case "transfer":
+            if (args[2] !== "copy" && args[2] !== "move")
+              throw new Error("Invalid transfer operation.");
+            return library.transfer(ids(args[0]), text(args[1]), args[2]);
+          case "createTag":
+            return library.createTag(text(args[0]));
+          case "renameTag":
+            return library.renameTag(text(args[0]), text(args[1]));
+          case "removeTag":
+            return library.removeTag(text(args[0]));
           case "remove": {
             const selected = ids(args[0]);
             const rows = selected.map((id) => library.get(id));
