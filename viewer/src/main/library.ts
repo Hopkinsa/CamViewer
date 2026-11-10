@@ -188,6 +188,12 @@ export class Library {
       filters.push(`${field('kind')}=?`);
       values.push(query.kind);
     }
+    if (query.tagMode === 'none') {
+      filters.push("NOT EXISTS (SELECT 1 FROM json_each(data,'$.tags'))");
+    } else if (query.tagMode === 'selected') {
+      filters.push("EXISTS (SELECT 1 FROM json_each(data,'$.tags') AS assigned WHERE assigned.value IN (SELECT value FROM json_each(?)))");
+      values.push(JSON.stringify(query.tags ?? []));
+    }
     for (const [date, operator] of [
       [query.from, '>='],
       [query.to, '<='],
