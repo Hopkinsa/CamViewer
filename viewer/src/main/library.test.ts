@@ -273,6 +273,18 @@ test("large library queries bound payloads and search metadata without returning
       ["Photo 2.jpg", "Photo 0002.jpg"],
     );
     assert.equal(library.query({ search: "élan trail" }).total, 1);
+    assert.equal(library.query({ tagMode: "all" }).total, 1500);
+    assert.equal(library.query({ tagMode: "none" }).total, 749);
+    assert.equal(library.query({ tagMode: "selected", tags: ["Night"] }).total, 750);
+    assert.equal(library.query({ tagMode: "selected", tags: ["Night", "Trail"] }).total, 751);
+    assert.equal(library.query({ tagMode: "selected", tags: ["Tra"] }).total, 0);
+    assert.equal(library.query({ tagMode: "selected", tags: ["Night' OR 1=1 --"] }).total, 0);
+    assert.equal(library.query({ tagMode: "selected", tags: [] }).total, 0);
+    assert.equal(library.query({ tagMode: "selected", tags: ["Night"], search: "unique DEER" }).total, 1);
+    assert.equal(library.query({ tagMode: "selected", tags: ["Night"], state: "gallery" }).total, 0);
+    assert.equal(library.query({ tagMode: "selected", tags: ["Night"], offset: 60, limit: 60 }).media.length, 60);
+    assert.equal(library.matchingIds({ tagMode: "selected", tags: ["Night"] }).length, 750);
+    assert.deepEqual(library.matchingIds({ tagMode: "none" }, ["id-0000", "id-0001", "id-0002"]), ["id-0002"]);
     assert.equal(
       library.query({ from: "2026-10-30", to: "2026-10-30" }).total,
       1,

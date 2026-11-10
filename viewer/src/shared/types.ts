@@ -72,6 +72,8 @@ export interface MediaQuery {
   exactFolder?: boolean;
   kind?: "all" | "image" | "video";
   search?: string;
+  tagMode?: "all" | "none" | "selected";
+  tags?: string[];
   from?: string;
   to?: string;
   sort?: SortBy;

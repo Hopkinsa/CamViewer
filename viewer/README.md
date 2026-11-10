@@ -45,7 +45,10 @@ disable it to work around certificate errors.
    folder and **Accept** to move reviewed files into the local gallery. Delete
    removes the selected working files only after native confirmation.
 4. In **Local gallery**, search filenames, dates, tags, and metadata; filter by
-   media type or date; sort results; and adjust thumbnail size. Selection can
+   media type, date, or tags; sort results; and adjust thumbnail size. In Filters,
+   **All tags** applies no tag restriction, **No tags** shows untagged files,
+   and **Selected tags** matches any checked tag. These filters combine with
+   search and apply across pages and **Select all matching**. Selection can
    span pages. Changing the result set removes selections outside that set.
 5. Use the inspector to rename a file, zoom or rotate an image, or play a video.
    Enable **Motion** for non-destructive movement boxes and their appearance
@@ -55,8 +58,9 @@ disable it to work around certificate errors.
    including files outside the current search/filter/page. Click a thumbnail to
    navigate, use the arrows or horizontal scrolling, and close with the X button.
    Thumbnail selection keeps the ribbon in place. Previous/next controls below
-   both image and video previews follow the same folder and sort order and
-   reveal the active thumbnail, including across ribbon pages.
+   both image and video previews follow the same folder and sort order without
+   rebuilding or scrolling the loaded ribbon. Opening the viewer or navigating
+   into a new ribbon page reveals the active thumbnail.
 6. **Edit metadata** changes selected database records. Tags are comma-separated;
    capture dates use UTC; the JSON editor replaces the metadata object when
    enabled. Clearing metadata clears the database fields, not embedded tags or

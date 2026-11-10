@@ -83,6 +83,8 @@ export function App() {
   const [sort, setSort] = useState<SortBy>("date");
   const [viewerOpen, setViewerOpen] = useState(false);
   const [kind, setKind] = useState("all");
+  const [tagMode, setTagMode] = useState<NonNullable<MediaQuery["tagMode"]>>("all");
+  const [filterTags, setFilterTags] = useState<string[]>([]);
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const [filters, setFilters] = useState(false);
@@ -112,7 +114,7 @@ export function App() {
     offset: 0,
     total: 0,
   });
-  const centeredFile = useRef<string | null>(null);
+  const centeredRibbon = useRef<MediaPage["media"] | null>(null);
   const [ribbonOffset, setRibbonOffset] = useState<number | null>(null);
   const ribbonCache = useRef<{ key: string; page: MediaPage } | null>(null);
   const loadRef = useRef<() => Promise<void>>(async () => {});
@@ -126,6 +128,8 @@ export function App() {
     folderId: view === "gallery" ? folder : undefined,
     search: deferredQuery,
     kind: kind as MediaQuery["kind"],
+    tagMode,
+    tags: filterTags,
     from,
     to,
     sort,
@@ -205,6 +209,8 @@ export function App() {
     deferredQuery,
     sort,
     kind,
+    tagMode,
+    filterTags,
     from,
     to,
     page,
@@ -236,7 +242,7 @@ export function App() {
   }, []);
   useEffect(() => {
     setPage(0);
-  }, [view, folder, deferredQuery, sort, kind, from, to]);
+  }, [view, folder, deferredQuery, sort, kind, tagMode, filterTags, from, to]);
   useEffect(() => {
     let disposed = false;
     if (selection.length && api)
@@ -256,7 +262,7 @@ export function App() {
     return () => {
       disposed = true;
     };
-  }, [view, folder, deferredQuery, kind, from, to]);
+  }, [view, folder, deferredQuery, kind, tagMode, filterTags, from, to]);
 
   const visible = snapshot?.media ?? [];
   const total = snapshot?.total ?? 0;
@@ -264,7 +270,9 @@ export function App() {
   const actualPage = Math.floor((snapshot?.offset ?? 0) / pageSize);
   const selectedIds = selection;
   const current =
-    detail?.id === focused && detail.state === view ? detail : null;
+    detail && detail.state === view && (viewerOpen || detail.id === focused)
+      ? detail
+      : null;
   const warnings =
     current?.warnings.filter((warning) => !hiddenWarnings.has(warning)) ?? [];
   const pageDates = visible
@@ -282,19 +290,19 @@ export function App() {
   const ribbonFiles = ribbon.media;
   const editorIds = viewing && current ? [current.id] : selectedIds;
   useEffect(() => {
-    if (!viewerOpen) centeredFile.current = null;
+    if (!viewerOpen) centeredRibbon.current = null;
     if (
       viewerOpen &&
       focused &&
       ribbon.focusId === focused &&
-      centeredFile.current !== focused
+      centeredRibbon.current !== ribbon.media
     ) {
       const element = ribbonRef.current?.querySelector(
         `[data-media-id="${focused}"]`,
       );
       if (element) {
         element.scrollIntoView({ block: "nearest", inline: "nearest" });
-        centeredFile.current = focused;
+        centeredRibbon.current = ribbon.media;
       }
     }
   }, [viewerOpen, focused, current?.id, ribbon, ribbonOffset]);
@@ -731,6 +739,46 @@ export function App() {
                 <option value="image">Images</option>
                 <option value="video">Videos</option>
               </select>
+              <select
+                aria-label="Tag filter"
+                value={tagMode}
+                onChange={(event) =>
+                  setTagMode(event.target.value as NonNullable<MediaQuery["tagMode"]>)
+                }
+              >
+                <option value="all">All tags</option>
+                <option value="none">No tags</option>
+                <option value="selected">Selected tags</option>
+              </select>
+              <details className="tag-filter-picker">
+                <summary>
+                  <Tags size={14} />
+                  {tagMode === "selected" && filterTags.length
+                    ? `${filterTags.length} ${filterTags.length === 1 ? "tag" : "tags"} selected`
+                    : "Choose tags"}
+                  <ChevronDown size={14} />
+                </summary>
+                <div className="tag-filter-options" role="group" aria-label="Filter tags">
+                  {!snapshot?.tags.length && <span>No tags</span>}
+                  {(snapshot?.tags ?? []).map((tag) => (
+                    <label key={tag}>
+                      <input
+                        type="checkbox"
+                        checked={tagMode === "selected" && filterTags.includes(tag)}
+                        onChange={(event) => {
+                          setTagMode("selected");
+                          setFilterTags((previous) =>
+                            event.target.checked
+                              ? [...new Set([...previous, tag])]
+                              : previous.filter((value) => value !== tag),
+                          );
+                        }}
+                      />
+                      {tag}
+                    </label>
+                  ))}
+                </div>
+              </details>
               <label>
                 From
                 <input
@@ -751,6 +799,8 @@ export function App() {
                 className="text-button"
                 onClick={() => {
                   setKind("all");
+                  setTagMode("all");
+                  setFilterTags([]);
                   setFrom("");
                   setTo("");
                 }}
@@ -1083,7 +1133,6 @@ export function App() {
                     aria-current={current.id === item.id ? "true" : undefined}
                     title={item.name}
                     onClick={() => {
-                      centeredFile.current = item.id;
                       setFocused(item.id);
                       setSelection([item.id]);
                     }}

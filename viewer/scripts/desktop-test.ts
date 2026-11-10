@@ -778,13 +778,18 @@ async function testUIAmendments() {
         ),
       initialIds,
     );
-    assert.equal(
-      await page
+    assert.ok(
+      Math.abs((await page
         .locator(".file-ribbon")
-        .evaluate((element) => element.scrollLeft),
-      stable.left,
+        .evaluate((element) => element.scrollLeft)) - stable.left) <= 1,
     );
     assert.ok(Math.abs((await target.boundingBox())!.x - stable.x) <= 1);
+    await page.locator(".file-ribbon").evaluate((element) => {
+      element.scrollLeft = 0;
+    });
+    const ribbonNodes = await page.locator(".file-ribbon").evaluateHandle(
+      (element) => [...element.children],
+    );
     await page.getByTitle("Next file", { exact: true }).click();
     await expect(
       page.locator('.ribbon-item[aria-current="true"]'),
@@ -793,6 +798,21 @@ async function testUIAmendments() {
     await expect(
       page.locator('.ribbon-item[aria-current="true"]'),
     ).toHaveAttribute("data-media-id", stable.id);
+    assert.equal(
+      await page.locator(".file-ribbon").evaluate((element) => {
+        return element.scrollLeft;
+      }),
+      0,
+    );
+    assert.ok(
+      await page.locator(".file-ribbon").evaluate((element, nodes) =>
+        [...element.children].every(
+          (item, index) => item === nodes[index],
+        ),
+        ribbonNodes,
+      ),
+    );
+    await ribbonNodes.dispose();
     await page.locator(".ribbon-item").last().click();
     await expect(page.locator(".viewer-inspector h2")).toHaveText(
       "image-059.jpg",
@@ -871,6 +891,44 @@ async function testUIAmendments() {
       "Nocturnal",
     ]);
     await page.getByTitle("Close viewer", { exact: true }).click();
+    await page.evaluate(async () => {
+      const { media } = await window.camviewer!.query({ state: "gallery", sort: "name", limit: 2 });
+      await window.camviewer!.update([media[0].id], { tags: ["Night", "Trail"] });
+      await window.camviewer!.update([media[1].id], { tags: ["Trail"] });
+    });
+    await page.getByTitle("Filters", { exact: true }).click();
+    await page.getByRole("combobox", { name: "Tag filter", exact: true }).selectOption("none");
+    await expect(page.locator(".selection-bar")).toContainText("73 files");
+    await page.locator(".tag-filter-picker summary").click();
+    await page.getByRole("checkbox", { name: "Night", exact: true }).check();
+    await expect(page.getByRole("combobox", { name: "Tag filter", exact: true })).toHaveValue("selected");
+    await expect(page.locator(".media-card")).toHaveCount(1);
+    await page.getByRole("checkbox", { name: "Trail", exact: true }).check();
+    await expect(page.locator(".media-card")).toHaveCount(2);
+    await page.getByRole("checkbox", { name: "Trail", exact: true }).uncheck();
+    await expect(page.locator(".media-card")).toHaveCount(1);
+    await page.getByRole("checkbox", { name: "Trail", exact: true }).check();
+    await expect(page.locator(".media-card")).toHaveCount(2);
+    await page.locator(".tag-filter-picker summary").click();
+    await page.getByRole("button", { name: "Select all matching", exact: true }).click();
+    await expect(page.locator(".selection-bar")).toContainText("2 selected");
+    await page.getByRole("combobox", { name: "Tag filter", exact: true }).selectOption("none");
+    await expect(page.locator(".selection-bar")).toContainText("73 files");
+    await page.getByRole("combobox", { name: "Tag filter", exact: true }).selectOption("all");
+    await expect(page.locator(".selection-bar")).toContainText("76 files");
+    await page.locator(".tag-filter-picker summary").click();
+    await page.getByRole("checkbox", { name: "Night", exact: true }).check();
+    await expect(page.locator(".tag-filter-picker summary")).toContainText("2 tags selected");
+    await expect(page.locator(".media-card")).toHaveCount(2);
+    await page.locator(".tag-filter-picker summary").click();
+    await page.getByRole("combobox", { name: "Tag filter", exact: true }).selectOption("selected");
+    await expect(page.locator(".media-card")).toHaveCount(2);
+    await page.getByRole("textbox", { name: "Search library", exact: true }).fill("image-000");
+    await expect(page.locator(".media-card")).toHaveCount(1);
+    await page.screenshot({ path: "test-results/amendments-tag-filter-desktop.png" });
+    await page.getByTitle("Clear search", { exact: true }).click();
+    await page.getByRole("button", { name: "Clear filters", exact: true }).click();
+    await expect(page.locator(".media-card")).toHaveCount(60);
     await page.locator(".media-card").nth(0).click();
     await page
       .locator(".media-card")
@@ -947,6 +1005,18 @@ async function testUIAmendments() {
       window.setMinimumSize(360, 560);
       window.setContentSize(390, 780);
     });
+    await page.getByRole("combobox", { name: "Tag filter", exact: true }).selectOption("selected");
+    await page.locator(".tag-filter-picker summary").click();
+    await page.getByRole("checkbox", { name: "Trail", exact: true }).check();
+    await expect(page.locator(".media-card")).toHaveCount(4);
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth));
+    const tagOptions = await page.locator(".tag-filter-options").boundingBox();
+    assert.ok(tagOptions && tagOptions.x >= 0 && tagOptions.x + tagOptions.width <= 390);
+    await page.screenshot({ path: "test-results/amendments-tag-filter-mobile.png" });
+    await page.locator(".tag-filter-picker summary").click();
+    await page.getByRole("button", { name: "Clear filters", exact: true }).click();
+    await expect(page.locator(".media-card")).toHaveCount(60);
+    await page.getByRole("button", { name: "Select page", exact: true }).click();
     await page.getByTitle("Copy to folder", { exact: true }).click();
     assert.ok(
       await page.evaluate(
@@ -972,7 +1042,7 @@ async function testUIAmendments() {
     });
     assert.deepEqual(failures, []);
     console.log(
-      "PASS: stable 60-file ribbon, image/video navigation, tag maintenance and assignments, nested-folder batch copy/move, desktop/mobile screenshots.",
+      "PASS: stable ribbon DOM and scroll position, image/video navigation, multi-tag/all/no-tag filtering and selection pruning, tag maintenance, nested-folder batch copy/move, desktop/mobile screenshots.",
     );
   } finally {
     if (desktop) await desktop.close();

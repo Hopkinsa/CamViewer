@@ -69,7 +69,7 @@ changes/
 /config.json
 data/*.*
 data/thumbnails/*.*
-files/*.*
+files/
 in/*.*
 out/*.*
 !data/README.md
