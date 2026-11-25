@@ -50,6 +50,11 @@ disable it to work around certificate errors.
    and **Selected tags** matches any checked tag. These filters combine with
    search and apply across pages and **Select all matching**. Selection can
    span pages. Changing the result set removes selections outside that set.
+   **All files** (selected at startup) includes Root and every gallery subfolder.
+   **Root** and individual subfolders show only their directly contained files,
+   not descendants. Switching scope resets pagination and clears selection.
+   All files is a virtual view, not a destination; destination pickers and new
+   folders default to Root while it is selected.
 5. Use the inspector to rename a file, zoom or rotate an image, or play a video.
    Enable **Motion** for non-destructive movement boxes and their appearance
    controls. Playback speed and standard video controls are available.

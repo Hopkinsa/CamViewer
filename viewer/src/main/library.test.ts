@@ -300,6 +300,143 @@ test("large library queries bound payloads and search metadata without returning
   }
 });
 
+test("gallery queries scope Root and nested folders while All files spans the gallery", async () => {
+  const root = await mkdtemp(join(tmpdir(), "camviewer-folder-scope-"));
+  const library = new Library(root, root);
+  try {
+    for (const folderId of ["root", "parent", "child", "sibling"]) {
+      for (let index = 0; index < 3; index++) {
+        const id = `${folderId}-${index}`;
+        library.put({
+          id,
+          folderId,
+          name: `${id}.jpg`,
+          state: "gallery",
+          kind: "image",
+          path: join(root, `${id}.jpg`),
+          hash: "hash",
+          size: 1,
+          width: 1,
+          height: 1,
+          duration: 0,
+          captureDate: "2026-10-31T12:00:00Z",
+          dateSource: "manual",
+          tags: index === 0 ? ["Night"] : [],
+          warnings: [],
+          importedAt: "2026-10-31T12:00:00Z",
+          metadata: {},
+        });
+      }
+    }
+    library.put({ ...library.get("root-0"), id: "review", state: "review" });
+    const filters = {
+      state: "gallery" as const,
+      search: ".jpg",
+      kind: "image" as const,
+      from: "2026-10-31",
+      to: "2026-10-31",
+      sort: "name" as const,
+    };
+    assert.equal(library.snapshot({ state: "gallery" }).total, 12);
+    assert.equal(library.query({ state: "review" }).total, 1);
+    assert.equal(library.query().total, 13);
+    assert.equal(library.query({ ...filters, tagMode: "none" }).total, 8);
+    assert.equal(
+      library.query({ ...filters, tagMode: "selected", tags: ["Night"] }).total,
+      4,
+    );
+    for (const folderId of ["root", "parent", "child", "sibling", "empty"]) {
+      const expected =
+        folderId === "empty"
+          ? []
+          : [0, 1, 2].map((index) => `${folderId}-${index}`);
+      for (const exactFolder of [undefined, false, true]) {
+        const query = { ...filters, folderId, exactFolder };
+        assert.deepEqual(
+          library.query(query).media.map((item) => item.id),
+          expected,
+        );
+        assert.deepEqual(library.matchingIds(query), expected);
+        assert.deepEqual(
+          library.matchingIds(query, [
+            "root-0",
+            "parent-0",
+            "child-0",
+            "sibling-0",
+            "review",
+          ]),
+          expected.slice(0, 1),
+        );
+        assert.equal(library.snapshot(query).total, expected.length);
+        assert.deepEqual(
+          library.matchingIds({
+            ...query,
+            tagMode: "selected",
+            tags: ["Night"],
+          }),
+          expected.slice(0, 1),
+        );
+        assert.deepEqual(
+          library.matchingIds({ ...query, tagMode: "none" }),
+          expected.slice(1),
+        );
+        const page = library.query({ ...query, limit: 1, offset: 1 });
+        assert.equal(page.total, expected.length);
+        assert.deepEqual(
+          page.media.map((item) => item.id),
+          expected.slice(1, 2),
+        );
+      }
+    }
+  } finally {
+    await library.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("legacy Root naming migrates idempotently without changing folders, media or settings", async () => {
+  const root = await mkdtemp(join(tmpdir(), "camviewer-root-name-"));
+  let library = new Library(root, root);
+  try {
+    await library.initialize();
+    await library.createFolder("Trail", "root");
+    const source = join(root, "legacy.jpg");
+    await sharp({
+      create: { width: 16, height: 16, channels: 3, background: "#427b65" },
+    })
+      .jpeg()
+      .toFile(source);
+    const imported = await library.importPaths([source]);
+    assert.deepEqual(imported.errors, []);
+    assert.deepEqual(
+      (await library.accept(imported.succeeded, "root")).errors,
+      [],
+    );
+    const media = library.rows();
+    const contents = await readFile(media[0].path);
+    const folders = library.folders();
+    assert.equal(folders.find((folder) => folder.id === "root")?.name, "Root");
+    library.db
+      .prepare(
+        "UPDATE folders SET data=json_set(data,'$.name','All files') WHERE id='root'",
+      )
+      .run();
+    const settings = library.settings();
+    await library.close();
+    for (let attempt = 0; attempt < 2; attempt++) {
+      library = new Library(root, root);
+      assert.deepEqual(library.folders(), folders);
+      assert.deepEqual(library.settings(), settings);
+      assert.deepEqual(library.rows(), media);
+      assert.deepEqual(await readFile(media[0].path), contents);
+      await library.close();
+    }
+  } finally {
+    if (library.db.isOpen) await library.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("real image import, review, accept, metadata, export, folders and delete persist", async () => {
   const root = await mkdtemp(join(tmpdir(), "camviewer-test-"));
   const source = resolve("../Requirements/example_files/IMG_5587.JPG");

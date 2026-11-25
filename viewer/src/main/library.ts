@@ -130,8 +130,11 @@ export class Library {
       .prepare('INSERT OR IGNORE INTO folders VALUES (?, ?)')
       .run(
         'root',
-        JSON.stringify({ id: 'root', name: 'All files', relativePath: '' })
+        JSON.stringify({ id: 'root', name: 'Root', relativePath: '' })
       );
+    this.db.prepare(
+      "UPDATE folders SET data=json_set(data,'$.name','Root') WHERE id='root' AND json_extract(data,'$.name')!='Root'"
+    ).run();
   }
   settings(): Settings {
     const stored = JSON.parse(
@@ -180,7 +183,7 @@ export class Library {
       filters.push(`${field('state')}=?`);
       values.push(query.state);
     }
-    if (query.folderId && (query.folderId !== 'root' || query.exactFolder)) {
+    if (query.folderId !== undefined) {
       filters.push(`${field('folderId')}=?`);
       values.push(query.folderId);
     }
