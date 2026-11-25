@@ -94,7 +94,7 @@ try {
   const failures: string[] = [];
   page.on("pageerror", (failure) => failures.push(failure.message));
   await expect(
-    page.getByRole("heading", { name: "Local gallery", exact: true }),
+    page.getByRole("heading", { name: "All files", exact: true }),
   ).toBeVisible();
   await expect(page.locator(".media-card")).toHaveCount(12);
   await expect(page.locator(".page-date-range")).toHaveText(firstPageRange);
@@ -718,6 +718,8 @@ async function testUIAmendments() {
     const videoImport = await fixture.importPaths([video]);
     assert.deepEqual(videoImport.errors, []);
     await fixture.accept(videoImport.succeeded, "root");
+    const reviewImport = await fixture.importPaths([source]);
+    assert.deepEqual(reviewImport.errors, []);
     await fixture.createFolder("Trail", "root");
     const parent = fixture.folders().find((item) => item.name === "Trail")!;
     await fixture.createFolder("Night", parent.id);
@@ -739,6 +741,8 @@ async function testUIAmendments() {
     page.on("pageerror", (error) => failures.push(error.message));
     await mkdir("test-results", { recursive: true });
     await expect(page.locator(".media-card")).toHaveCount(60);
+    await expect(page.getByRole("combobox", { name: "Sort files", exact: true })).toHaveValue("name");
+    await expect(page.locator(".media-card").first()).toHaveAttribute("title", "image-000.jpg");
     await page.locator(".media-card").first().dblclick();
     await expect(page.locator(".ribbon-item")).toHaveCount(60);
     await expect(
@@ -1000,6 +1004,105 @@ async function testUIAmendments() {
       )
       .toBe(2);
     await expect(page.locator(".notice.error")).toHaveCount(0);
+    const folders = page.locator(".sidebar .folder-list");
+    await expect(folders.locator(".folder-item").first()).toContainText(
+      "All files",
+    );
+    await expect(folders.locator(".folder-item").nth(1)).toHaveText("Root");
+    await expect(folders.locator(".chosen")).toContainText("All files");
+    await expect(page.getByTitle("Rename folder", { exact: true })).toHaveCount(
+      0,
+    );
+    await page.getByTitle("Next page", { exact: true }).click();
+    await expect(page.locator(".media-card")).toHaveCount(18);
+    await folders.getByRole("button", { name: "Root", exact: true }).click();
+    await expect(
+      page.getByRole("heading", { name: "Root", exact: true }),
+    ).toBeVisible();
+    await expect(page.locator(".media-card")).toHaveCount(60);
+    await expect(page.locator(".selection-bar")).toContainText("74 files");
+    await expect(page.locator(".batch-bar")).toHaveCount(0);
+    await expect(
+      page.getByTitle("Previous page", { exact: true }),
+    ).toBeDisabled();
+    await page
+      .getByRole("button", { name: "Select all matching", exact: true })
+      .click();
+    await expect(page.locator(".batch-bar")).toContainText("74 selected");
+    await page.getByTitle("Copy to folder", { exact: true }).click();
+    const rootPicker = page.getByRole("dialog", {
+      name: "Copy to folder",
+      exact: true,
+    });
+    await expect(
+      rootPicker.getByRole("radio", { name: "Root", exact: true }),
+    ).toHaveAttribute("aria-checked", "true");
+    await expect(
+      rootPicker.getByRole("radio", { name: /All files/ }),
+    ).toHaveCount(0);
+    await page.getByTitle("Close folder picker", { exact: true }).click();
+    await folders.getByRole("button", { name: "Trail", exact: true }).click();
+    await expect(page.locator(".media-card")).toHaveCount(2);
+    await expect(page.locator(".batch-bar")).toHaveCount(0);
+    await folders.getByRole("button", { name: "Night", exact: true }).click();
+    await expect(page.locator(".media-card")).toHaveCount(2);
+    const folderPadding = async (name: string) =>
+      folders
+        .getByRole("button", { name, exact: true })
+        .evaluate((element) =>
+          Number.parseFloat(getComputedStyle(element).paddingLeft),
+        );
+    assert.ok((await folderPadding("Night")) > (await folderPadding("Trail")));
+    assert.ok((await folderPadding("Trail")) > (await folderPadding("Root")));
+    await folders.getByRole("button", { name: /All files/ }).click();
+    await page.getByTitle("New folder", { exact: true }).click();
+    await page
+      .getByRole("textbox", { name: "Name", exact: true })
+      .fill("Empty");
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    assert.equal(
+      await page.evaluate(
+        async () =>
+          (await window.camviewer!.snapshot()).folders.find(
+            (item) => item.name === "Empty",
+          )?.relativePath,
+      ),
+      "Empty",
+    );
+    await folders.getByRole("button", { name: "Empty", exact: true }).click();
+    await expect(page.locator(".media-card")).toHaveCount(0);
+    await expect(page.locator(".selection-bar")).toContainText("0 files");
+    await folders.getByRole("button", { name: /All files/ }).click();
+    await expect(page.locator(".selection-bar")).toContainText("78 files");
+    await page.locator(".media-card").first().dblclick();
+    await expect(page.locator(".ribbon-item")).toHaveCount(2);
+    await page.getByTitle("Close viewer", { exact: true }).click();
+    await page
+      .getByRole("button", { name: "Select all matching", exact: true })
+      .click();
+    await expect(page.locator(".batch-bar")).toContainText("78 selected");
+    await page.getByTitle("Copy to folder", { exact: true }).click();
+    await expect(
+      page.getByRole("radio", { name: "Root", exact: true }),
+    ).toHaveAttribute("aria-checked", "true");
+    await page.getByTitle("Close folder picker", { exact: true }).click();
+    await page.getByRole("button", { name: /Review imports/ }).click();
+    await expect(page.locator(".media-card")).toHaveCount(1);
+    await page
+      .getByRole("button", { name: "Select page", exact: true })
+      .click();
+    await expect(
+      page.getByRole("combobox", { name: "Accept into folder", exact: true }),
+    ).toHaveValue("root");
+    await expect(
+      page
+        .getByRole("combobox", { name: "Accept into folder", exact: true })
+        .getByRole("option", { name: "All files", exact: true }),
+    ).toHaveCount(0);
+    await page.getByRole("button", { name: "Accept", exact: true }).click();
+    await expect(page.locator(".media-card")).toHaveCount(0);
+    await folders.getByRole("button", { name: /All files/ }).click();
+    await expect(page.locator(".selection-bar")).toContainText("79 files");
     await desktop.evaluate(({ BrowserWindow }) => {
       const window = BrowserWindow.getAllWindows()[0];
       window.setMinimumSize(360, 560);
@@ -1036,13 +1139,14 @@ async function testUIAmendments() {
     );
     await page.screenshot({ path: "test-results/amendments-tags-mobile.png" });
     await page.getByTitle("Close settings", { exact: true }).click();
+    await page.locator(".media-card").first().click();
     await expect(page.getByTitle("Next file", { exact: true })).toBeVisible();
     await page.screenshot({
       path: "test-results/amendments-preview-mobile.png",
     });
     assert.deepEqual(failures, []);
     console.log(
-      "PASS: stable ribbon DOM and scroll position, image/video navigation, multi-tag/all/no-tag filtering and selection pruning, tag maintenance, nested-folder batch copy/move, desktop/mobile screenshots.",
+      "PASS: All files/Root/nested-folder scope, counts, pagination, selection and destinations; stable ribbon DOM and scroll position, image/video navigation, multi-tag/all/no-tag filtering and selection pruning, tag maintenance, nested-folder batch copy/move, desktop/mobile screenshots.",
     );
   } finally {
     if (desktop) await desktop.close();

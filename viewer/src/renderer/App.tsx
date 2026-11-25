@@ -77,7 +77,8 @@ const hiddenWarnings = new Set([
 export function App() {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [view, setView] = useState<View>("gallery");
-  const [folder, setFolder] = useState("root");
+  const [folder, setFolder] = useState<string | null>(null);
+  const physicalFolder = folder ?? "root";
   const [query, setQuery] = useState("");
   const deferredQuery = useDeferredValue(query);
   const [sort, setSort] = useState<SortBy>("date");
@@ -125,7 +126,7 @@ export function App() {
   const pageSize = snapshot?.settings.pageSize ?? 60;
   const queryOptions: MediaQuery = {
     state: view,
-    folderId: view === "gallery" ? folder : undefined,
+    folderId: view === "gallery" ? (folder ?? undefined) : undefined,
     search: deferredQuery,
     kind: kind as MediaQuery["kind"],
     tagMode,
@@ -432,9 +433,9 @@ export function App() {
     setModal(null);
     await perform(() =>
       target.type === "folder"
-        ? api.createFolder(target.value, folder)
+        ? api.createFolder(target.value, physicalFolder)
         : target.type === "renameFolder"
-          ? api.renameFolder(folder, target.value)
+          ? api.renameFolder(physicalFolder, target.value)
           : api.rename(current!.id, target.value),
     );
   }
@@ -533,33 +534,46 @@ export function App() {
             </button>
           </div>
           <div className="folder-list">
+            <button
+              className={`folder-item ${folder === null && view === "gallery" ? "chosen" : ""}`}
+              onClick={() => {
+                setFolder(null);
+                changeView("gallery");
+              }}
+            >
+              <Library size={16} />
+              <span>All files</span>
+              <span className="muted">{counts.gallery}</span>
+            </button>
             {(
               snapshot?.folders ?? [
-                { id: "root", name: "All files", relativePath: "" },
+                { id: "root", name: "Root", relativePath: "" },
               ]
-            ).map((item) => (
-              <button
-                key={item.id}
-                className={`folder-item ${folder === item.id && view === "gallery" ? "chosen" : ""}`}
-                style={{
-                  paddingLeft:
-                    12 +
-                    item.relativePath.split(/[/\\]/).filter(Boolean).length * 9,
-                }}
-                onClick={() => {
-                  setFolder(item.id);
-                  changeView("gallery");
-                }}
-              >
-                <Folder size={16} />
-                <span>{item.name}</span>
-                {item.id === "root" && (
-                  <span className="muted">{counts.gallery}</span>
-                )}
-              </button>
-            ))}
+            )
+              .toSorted((left, right) =>
+                left.relativePath.localeCompare(right.relativePath),
+              )
+              .map((item) => (
+                <button
+                  key={item.id}
+                  className={`folder-item ${folder === item.id && view === "gallery" ? "chosen" : ""}`}
+                  style={{
+                    paddingLeft:
+                      12 +
+                      item.relativePath.split(/[/\\]/).filter(Boolean).length *
+                        9,
+                  }}
+                  onClick={() => {
+                    setFolder(item.id);
+                    changeView("gallery");
+                  }}
+                >
+                  <Folder size={16} />
+                  <span>{item.name}</span>
+                </button>
+              ))}
           </div>
-          {folder !== "root" && view === "gallery" && (
+          {folder !== null && folder !== "root" && view === "gallery" && (
             <div className="folder-tools">
               <button
                 className="icon small"
@@ -579,7 +593,7 @@ export function App() {
                 disabled={busy}
                 onClick={() =>
                   void perform(async () => {
-                    await api!.removeFolder(folder);
+                    await api!.removeFolder(physicalFolder);
                     setFolder("root");
                   })
                 }
@@ -626,8 +640,8 @@ export function App() {
               <h1>
                 {view === "review"
                   ? "Review imports"
-                  : folder === "root"
-                    ? "Local gallery"
+                  : folder === null
+                    ? "All files"
                     : (activeFolder?.name ?? "Local gallery")}
               </h1>
               <p>
@@ -743,7 +757,9 @@ export function App() {
                 aria-label="Tag filter"
                 value={tagMode}
                 onChange={(event) =>
-                  setTagMode(event.target.value as NonNullable<MediaQuery["tagMode"]>)
+                  setTagMode(
+                    event.target.value as NonNullable<MediaQuery["tagMode"]>,
+                  )
                 }
               >
                 <option value="all">All tags</option>
@@ -758,13 +774,19 @@ export function App() {
                     : "Choose tags"}
                   <ChevronDown size={14} />
                 </summary>
-                <div className="tag-filter-options" role="group" aria-label="Filter tags">
+                <div
+                  className="tag-filter-options"
+                  role="group"
+                  aria-label="Filter tags"
+                >
                   {!snapshot?.tags.length && <span>No tags</span>}
                   {(snapshot?.tags ?? []).map((tag) => (
                     <label key={tag}>
                       <input
                         type="checkbox"
-                        checked={tagMode === "selected" && filterTags.includes(tag)}
+                        checked={
+                          tagMode === "selected" && filterTags.includes(tag)
+                        }
                         onChange={(event) => {
                           setTagMode("selected");
                           setFilterTags((previous) =>
@@ -1234,7 +1256,7 @@ export function App() {
                   <>
                     <select
                       aria-label="Accept into folder"
-                      value={folder}
+                      value={physicalFolder}
                       onChange={(event) => setFolder(event.target.value)}
                     >
                       {snapshot?.folders.map((item) => (
@@ -1248,7 +1270,7 @@ export function App() {
                       disabled={busy}
                       onClick={() =>
                         void perform(
-                          () => api!.accept([...selectedIds], folder),
+                          () => api!.accept([...selectedIds], physicalFolder),
                           "Selected files accepted into the gallery.",
                         )
                       }
@@ -1365,7 +1387,7 @@ export function App() {
         <TransferDialog
           operation={transfer}
           folders={snapshot.folders}
-          initialFolder={folder}
+          initialFolder={physicalFolder}
           count={selectedIds.length}
           close={() => setTransfer(null)}
           submit={(destination) => {
@@ -1790,64 +1812,68 @@ function FilePreview({
         )}
       </div>
       <div className="preview-controls">
-        <button
-          className="icon small"
-          title="Previous file"
-          disabled={previousDisabled}
-          onClick={previous}
-        >
-          <ChevronLeft size={16} />
-        </button>
-        {media.kind === "image" && (
-          <>
-            <button
-              className="icon small"
-              title="Zoom out"
-              onClick={() => setZoom(Math.max(0.25, zoom - 0.25))}
-            >
-              <ZoomOut size={16} />
-            </button>
-            <button
-              className="zoom-label"
-              title="Fit image"
-              onClick={() => {
-                setZoom(1);
-                setRotation(0);
-              }}
-            >
-              {Math.round(zoom * 100)}%
-            </button>
-            <button
-              className="icon small"
-              title="Zoom in"
-              onClick={() => setZoom(Math.min(5, zoom + 0.25))}
-            >
-              <ZoomIn size={16} />
-            </button>
-            <button
-              className="icon small"
-              title="Rotate clockwise"
-              onClick={() => setRotation(rotation + 90)}
-            >
-              <RotateCw size={16} />
-            </button>
-            <button
-              className="icon small"
-              title="Fullscreen image"
-              onClick={() => void preview.current?.requestFullscreen()}
-            >
-              <Maximize size={16} />
-            </button>
-          </>
-        )}
-        <button
-          className="icon small"
-          title="Next file"
-          disabled={nextDisabled}
-          onClick={next}
-        >
-          <ChevronRight size={16} />
-        </button>
+        <div className="preview-controls-left">
+          {media.kind === "image" && (
+            <>
+              <button
+                className="icon small"
+                title="Zoom out"
+                onClick={() => setZoom(Math.max(0.25, zoom - 0.25))}
+              >
+                <ZoomOut size={16} />
+              </button>
+              <button
+                className="zoom-label"
+                title="Fit image"
+                onClick={() => {
+                  setZoom(1);
+                  setRotation(0);
+                }}
+              >
+                {Math.round(zoom * 100)}%
+              </button>
+              <button
+                className="icon small"
+                title="Zoom in"
+                onClick={() => setZoom(Math.min(5, zoom + 0.25))}
+              >
+                <ZoomIn size={16} />
+              </button>
+              <button
+                className="icon small"
+                title="Rotate clockwise"
+                onClick={() => setRotation(rotation + 90)}
+              >
+                <RotateCw size={16} />
+              </button>
+              <button
+                className="icon small"
+                title="Fullscreen image"
+                onClick={() => void preview.current?.requestFullscreen()}
+              >
+                <Maximize size={16} />
+              </button>
+            </>
+          )}
+        </div>
+        <div className="preview-controls-right">
+          <button
+            className="icon small"
+            title="Previous file"
+            disabled={previousDisabled}
+            onClick={previous}
+          >
+            <ChevronLeft size={16} />
+          </button>
+          <button
+            className="icon small"
+            title="Next file"
+            disabled={nextDisabled}
+            onClick={next}
+          >
+            <ChevronRight size={16} />
+          </button>
+        </div>
       </div>
     </div>
   );

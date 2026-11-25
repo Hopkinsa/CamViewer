@@ -609,7 +609,7 @@ select {
   height: 230px;
   overflow: auto;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: center;
   position: relative;
 }
@@ -1514,7 +1514,7 @@ select {
   flex: 1;
   min-height: 0;
   display: flex;
-  align-items: center;
+  margin-top: 2rem;
   justify-content: center;
   overflow: auto;
 }
@@ -1531,7 +1531,7 @@ select {
 }
 .viewer-media .preview-controls {
   flex-shrink: 0;
-  justify-content: center;
+  justify-content: space-between;
 }
 .viewer-media .motion-player {
   width: 100%;
@@ -1568,6 +1568,8 @@ select {
   padding: 3px;
   scroll-behavior: smooth;
 }
+.preview-controls-left { display: flex; align-self: flex-start; }
+.preview-controls-right { display: flex; align-self: flex-end; }
 .ribbon-item {
   width: 110px;
   flex: 0 0 110px;
